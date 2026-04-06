@@ -20,13 +20,7 @@ body{font-family:Arial,sans-serif;background:#f4f4f4;min-height:100vh;display:fl
 .login-btn{background:#1e40af;color:#fff}
 .login-btn:hover{background:#1e3a8a}
 .error-msg{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;font-size:12px;color:#991b1b;display:none;text-align:center}
-.success-msg{background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 12px;font-size:12px;color:#15803d;display:none;text-align:center}
 .hint{text-align:center;font-size:11px;color:#aaa;margin-top:12px}
-.device-id-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:16px;text-align:center}
-.device-id-box label{font-size:11px;color:#64748b;display:block;margin-bottom:6px}
-.device-id-box code{font-size:14px;font-weight:600;color:#1e40af;letter-spacing:1px;word-break:break-all;user-select:all}
-.copy-btn{background:none;border:none;font-size:16px;cursor:pointer;margin-left:6px;vertical-align:middle}
-.copy-btn:hover{transform:scale(1.2)}
 .dark-toggle{position:absolute;top:1rem;right:1rem;background:none;border:none;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:6px}
 .dark-toggle:hover{background:#e0e0e0}
 body.dark{background:#0f172a}
@@ -36,10 +30,6 @@ body.dark .login-header p{color:#94a3b8}
 body.dark .login-form input{background:#0f172a;border-color:#334155;color:#e2e8f0}
 body.dark .login-form input:focus{border-color:#2563eb;background:#1e293b}
 body.dark .error-msg{background:#451a1a;border-color:#7f1d1d;color:#fca5a5}
-body.dark .success-msg{background:#14532d;border-color:#16a34a;color:#86efac}
-body.dark .device-id-box{background:#0f172a;border-color:#334155}
-body.dark .device-id-box label{color:#94a3b8}
-body.dark .device-id-box code{color:#93c5fd}
 body.dark .hint{color:#64748b}
 body.dark .dark-toggle:hover{background:#334155}
 </style>
@@ -51,56 +41,33 @@ body.dark .dark-toggle:hover{background:#334155}
     <h1>🛡️ Guild Treasury</h1>
     <p>Albion Online — Balance Tracker</p>
   </div>
-
-  <div class="device-id-box">
-    <label>📱 Device ID Anda (kirim ke developer untuk mendapatkan key)</label>
-    <code id="deviceIdDisplay">—</code>
-    <button class="copy-btn" onclick="copyDeviceId()" title="Copy">📋</button>
-  </div>
-
   <div class="error-msg" id="errorMsg"></div>
-  <div class="success-msg" id="successMsg"></div>
-
   <form class="login-form" id="loginForm" onsubmit="handleLogin(event)">
-    <input type="text" id="loginKey" placeholder="Masukkan License Key" autocomplete="off" required>
+    <input type="password" id="loginPassword" placeholder="Masukkan password" autocomplete="current-password" required>
     <button type="submit" class="login-btn">🔓 Masuk</button>
   </form>
-  <p class="hint">Key terikat ke device ini dan memiliki masa berlaku.</p>
+  <button class="setup-btn" style="width:100%;margin-top:12px" onclick="showSetup()">🔐 Set Password (pertama kali)</button>
+  <p class="hint">Password tersimpan di browser Anda (SHA-256 hashed)</p>
 </div>
 
 <script>
-const DEVICE_ID_KEY = 'guildTreasuryDeviceId';
-const LICENSE_KEY = 'guildTreasuryLicenseKey';
-const LICENSE_EXPIRY = 'guildTreasuryKeyExpiry';
+const STORAGE_KEY = 'treasuryPassword';
 
 function showError(msg) {
   const el = document.getElementById('errorMsg');
   el.textContent = '❌ ' + msg;
   el.style.display = 'block';
-  document.getElementById('successMsg').style.display = 'none';
-  setTimeout(() => { el.style.display = 'none'; }, 5000);
+  setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
 function showSuccess(msg) {
   const el = document.getElementById('successMsg');
   el.textContent = '✅ ' + msg;
   el.style.display = 'block';
-  document.getElementById('errorMsg').style.display = 'none';
+  setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
-function getDeviceId() {
-  let id = localStorage.getItem(DEVICE_ID_KEY);
-  if (!id) {
-    const arr = new Uint8Array(16);
-    crypto.getRandomValues(arr);
-    id = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('-');
-    id = id.substring(0, 23).toUpperCase();
-    localStorage.setItem(DEVICE_ID_KEY, id);
-  }
-  return id;
-}
-
-async function hashKey(str) {
+async function hashPassword(str) {
   const encoder = new TextEncoder();
   const data = encoder.encode(str);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
@@ -108,69 +75,57 @@ async function hashKey(str) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function generateExpectedKey(deviceId, expiryStr) {
-  const secret = 'AlbionGuildTreasury2026!@#$';
-  const raw = deviceId.toUpperCase().replace(/-/g, '') + secret + expiryStr;
-  const hash = await hashKey(raw);
-  const keyPart = hash.substring(0, 8).toUpperCase() + '-' +
-                  hash.substring(8, 16).toUpperCase() + '-' +
-                  hash.substring(16, 24).toUpperCase();
-  return keyPart + ':' + expiryStr;
-}
-
-function parseKey(fullKey) {
-  const parts = fullKey.trim().split(':');
-  if (parts.length !== 2) return null;
-  return { keyPart: parts[0], expiryStr: parts[1] };
-}
-
-function isExpired(expiryStr) {
-  const y = parseInt(expiryStr.substring(0, 4));
-  const m = parseInt(expiryStr.substring(4, 6)) - 1;
-  const d = parseInt(expiryStr.substring(6, 8));
-  const expiryDate = new Date(y, m, d, 23, 59, 59);
-  return new Date() > expiryDate;
-}
-
 async function handleLogin(e) {
   e.preventDefault();
-  const inputKey = document.getElementById('loginKey').value.trim();
-  if (!inputKey) return showError('License Key tidak boleh kosong!');
+  const pw = document.getElementById('loginPassword').value;
+  if (!pw) return showError('Password tidak boleh kosong!');
 
-  const parsed = parseKey(inputKey);
-  if (!parsed) return showError('Format License Key tidak valid!');
-
-  if (isExpired(parsed.expiryStr)) {
-    return showError('License Key sudah kadaluarsa! Minta key baru ke developer.');
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (!saved) {
+    showError('Belum ada password. Klik "Set Password" terlebih dahulu.');
+    return;
   }
 
-  const deviceId = getDeviceId();
-  const expectedKey = await generateExpectedKey(deviceId, parsed.expiryStr);
-
-  if (inputKey.toUpperCase() === expectedKey) {
-    localStorage.setItem(LICENSE_KEY, inputKey.toUpperCase());
-    localStorage.setItem(LICENSE_EXPIRY, parsed.expiryStr);
-    showSuccess('Login berhasil! Mengalihkan...');
-    setTimeout(() => { window.location.href = './index.html'; }, 800);
+  const inputHash = await hashPassword(pw);
+  if (inputHash === saved) {
+    sessionStorage.setItem('treasuryLoggedIn', '1');
+    window.location.href = './index.html';
   } else {
-    showError('License Key tidak valid untuk device ini!');
-    document.getElementById('loginKey').value = '';
+    showError('Password salah!');
+    document.getElementById('loginPassword').value = '';
   }
 }
 
-function copyDeviceId() {
-  const id = document.getElementById('deviceIdDisplay').textContent;
-  navigator.clipboard.writeText(id).then(() => {
-    showSuccess('Device ID berhasil disalin!');
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = id;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    showSuccess('Device ID berhasil disalin!');
-  });
+function showSetup() {
+  const wrap = document.querySelector('.login-wrap');
+  wrap.innerHTML = `
+    <div class="login-header">
+      <h1>🔐 Set Password</h1>
+      <p>Buat password untuk melindungi data Anda</p>
+    </div>
+    <div class="error-msg" id="errorMsg"></div>
+    <form class="login-form" onsubmit="handleSetup(event)">
+      <input type="password" id="setupPw" placeholder="Password baru" required>
+      <input type="password" id="confirmPw" placeholder="Konfirmasi password" required>
+      <button type="submit" class="login-btn">💾 Simpan Password</button>
+    </form>
+    <button class="setup-btn" style="width:100%;margin-top:12px" onclick="window.location.reload()">← Kembali ke Login</button>
+  `;
+}
+
+async function handleSetup(e) {
+  e.preventDefault();
+  const pw = document.getElementById('setupPw').value;
+  const confirm = document.getElementById('confirmPw').value;
+
+  if (!pw) return showError('Password tidak boleh kosong!');
+  if (pw.length < 4) return showError('Password minimal 4 karakter!');
+  if (pw !== confirm) return showError('Password tidak cocok!');
+
+  const hash = await hashPassword(pw);
+  localStorage.setItem(STORAGE_KEY, hash);
+  sessionStorage.setItem('treasuryLoggedIn', '1');
+  window.location.href = './index.html';
 }
 
 function toggleDarkMode() {
@@ -185,25 +140,11 @@ if (localStorage.getItem('darkMode') === '1') {
   document.getElementById('darkBtn').textContent = '☀️';
 }
 
-if (localStorage.getItem(LICENSE_KEY)) {
-  const expiry = localStorage.getItem(LICENSE_EXPIRY);
-  if (expiry && !isExpired(expiry)) {
-    window.location.href = './index.html';
-  } else {
-    localStorage.removeItem(LICENSE_KEY);
-    localStorage.removeItem(LICENSE_EXPIRY);
-    showError('Key sudah kadaluarsa. Login ulang dengan key baru.');
-  }
+if (sessionStorage.getItem('treasuryLoggedIn') === '1') {
+  window.location.href = './index.html';
 }
 
-const urlParams = new URLSearchParams(window.location.search);
-if (urlParams.get('revoked') === '1') {
-  showError('Akses Anda telah dicabut. Hubungi developer untuk mendapatkan key baru.');
-}
-
-const deviceId = getDeviceId();
-document.getElementById('deviceIdDisplay').textContent = deviceId;
-document.getElementById('loginKey').focus();
+document.getElementById('loginPassword').focus();
 </script>
 </body>
 </html>

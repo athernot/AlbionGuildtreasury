@@ -229,8 +229,7 @@
 
   function logout() {
     if (!confirm('🚪 Logout? Anda perlu login lagi untuk mengakses aplikasi.')) return;
-    localStorage.removeItem('guildTreasuryLicenseKey');
-    localStorage.removeItem('guildTreasuryKeyExpiry');
+    sessionStorage.removeItem('treasuryLoggedIn');
     window.location.href = './login.html';
   }
 
