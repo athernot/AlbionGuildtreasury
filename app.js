@@ -14,8 +14,6 @@
   let balMapCacheVersion = 0;
   const APP_VERSION = 'V8.0';
   const STORAGE_KEY = 'albionGuildTreasuryV80';
-  /** @type {string|null} */
-  let passwordHash = null;
   /** @type {{col:number,dir:'asc'|'desc'}} */
   let currentSort = { col: 1, dir: 'desc' };
   /** @type {string|null} */
@@ -1488,103 +1486,108 @@ function hideLoading() {
 }
 
 // ==================== KEYBOARD SHORTCUTS ====================
-document.addEventListener('keydown', function(e) {
-  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-  const ctrl = isMac ? e.metaKey : e.ctrlKey;
-  if (ctrl && e.key === 'Enter') {
-    e.preventDefault();
-    parseLog();
-  }
-  if (ctrl && e.key === 's') {
-    e.preventDefault();
-    saveToStorage().then(() => {
-      const toast = document.getElementById('dlToast');
-      document.getElementById('dlToastText').textContent = '💾 Data tersimpan!';
-      toast.classList.add('show');
-      setTimeout(() => hideToast('dlToast'), 2000);
-    });
-  }
-  if (ctrl && e.key === 'e') {
-    e.preventDefault();
-    if (rows.length > 0) autoDownloadExcel();
-  }
-  if (e.key === 'Escape') {
-    closeModal();
-    closeAddModal();
-    closeResetModal();
-    closeBulkModal();
-    document.getElementById('dupNotice').style.display = 'none';
-  }
-  if (ctrl && e.key === 'f') {
-    e.preventDefault();
-    document.getElementById('fSearch').focus();
-  }
-});
+  document.addEventListener('keydown', function(e) {
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const ctrl = isMac ? e.metaKey : e.ctrlKey;
+    if (ctrl && e.key === 'Enter') {
+      e.preventDefault();
+      parseLog();
+    }
+    if (ctrl && e.key === 's') {
+      e.preventDefault();
+      saveToStorage().then(() => {
+        const toast = document.getElementById('dlToast');
+        document.getElementById('dlToastText').textContent = '💾 Data tersimpan!';
+        toast.classList.add('show');
+        setTimeout(() => hideToast('dlToast'), 2000);
+      });
+    }
+    if (ctrl && e.key === 'e') {
+      e.preventDefault();
+      if (rows.length > 0) autoDownloadExcel();
+    }
+    if (e.key === 'Escape') {
+      closeModal();
+      closeAddModal();
+      closeResetModal();
+      closeBulkModal();
+      document.getElementById('dupNotice').style.display = 'none';
+    }
+    if (ctrl && e.key === 'f') {
+      e.preventDefault();
+      document.getElementById('fSearch').focus();
+    }
+  });
 
 // ==================== INIT ====================
 window.onload = async function () {
-  await initDB();
   try {
-    const savedAudit = localStorage.getItem('albionAuditLog');
-    if (savedAudit) auditLog = JSON.parse(savedAudit);
-  } catch(e) { auditLog = []; }
-  if (localStorage.getItem('darkMode') === '1') {
-    document.body.classList.add('dark');
-    document.getElementById('darkBtn').textContent = '☀️';
-  }
-  updateStorageBadge();
-  document.getElementById('initBal').addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
-  document.getElementById('loadBtn').addEventListener('click', loadFromStorage);
-  document.getElementById('backupBtn').addEventListener('click', saveJSONBackup);
-  document.getElementById('resetBtn').addEventListener('click', resetAll);
-  document.getElementById('parseBtn').addEventListener('click', parseLog);
-  document.getElementById('addManualBtn').addEventListener('click', openAddModal);
-  document.getElementById('clearLogBtn').addEventListener('click', function() { document.getElementById('logInput').value = ''; });
-  document.getElementById('dlBtn').addEventListener('click', autoDownloadExcel);
-  document.getElementById('csvBtn').addEventListener('click', exportCSV);
-  document.getElementById('pdfBtn').addEventListener('click', exportPDF);
-  document.getElementById('fPlayer').addEventListener('change', renderTable);
-  document.getElementById('fReason').addEventListener('change', renderTable);
-  document.getElementById('fTag').addEventListener('change', renderTable);
-  document.getElementById('fCurrency').addEventListener('change', renderTable);
-  document.getElementById('fDateFrom').addEventListener('change', renderTable);
-  document.getElementById('fDateTo').addEventListener('change', renderTable);
-  document.getElementById('fSort').addEventListener('change', function() { applySort(this.value); });
-  document.getElementById('fSearch').addEventListener('input', renderTable);
-  document.getElementById('selectAllCb').addEventListener('change', function() { toggleSelectAll(this); });
-  document.querySelectorAll('.tab-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
-  });
-  const uploadZone = document.getElementById('uploadZone');
-  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
-  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
-  uploadZone.addEventListener('drop', e => {
-    e.preventDefault();
-    uploadZone.classList.remove('drag-over');
-    handleFileSelect(e);
-  });
-  if (localStorage.getItem(STORAGE_KEY)) {
-    document.getElementById('uploadZoneText').innerHTML += `<br><small style="color:#15803d">💡 Ada data tersimpan — klik “Load from Browser”</small>`;
-  }
-  const oldKey = 'albionGuildTreasuryV61';
-  if (!localStorage.getItem(STORAGE_KEY) && localStorage.getItem(oldKey)) {
+    await initDB();
     try {
-      const oldData = JSON.parse(localStorage.getItem(oldKey));
-      rows = (oldData.rows || []).map(function(r) {
-        if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
-        if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
-        return r;
-      });
-      document.getElementById('initBal').value = oldData.initBal || 0;
-      saveToStorage();
-      localStorage.removeItem(oldKey);
-    } catch(e) {
-      console.warn('Legacy data corrupt, skipping migration');
-      localStorage.removeItem(oldKey);
+      const savedAudit = localStorage.getItem('albionAuditLog');
+      if (savedAudit) auditLog = JSON.parse(savedAudit);
+    } catch(e) { auditLog = []; }
+    if (localStorage.getItem('darkMode') === '1') {
+      document.body.classList.add('dark');
+      document.getElementById('darkBtn').textContent = '☀️';
     }
+    updateStorageBadge();
+    document.getElementById('initBal').addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
+    document.getElementById('loadBtn').addEventListener('click', loadFromStorage);
+    document.getElementById('backupBtn').addEventListener('click', saveJSONBackup);
+    document.getElementById('resetBtn').addEventListener('click', resetAll);
+    document.getElementById('parseBtn').addEventListener('click', parseLog);
+    document.getElementById('addManualBtn').addEventListener('click', openAddModal);
+    document.getElementById('clearLogBtn').addEventListener('click', function() { document.getElementById('logInput').value = ''; });
+    document.getElementById('dlBtn').addEventListener('click', autoDownloadExcel);
+    document.getElementById('csvBtn').addEventListener('click', exportCSV);
+    document.getElementById('pdfBtn').addEventListener('click', exportPDF);
+    document.getElementById('fPlayer').addEventListener('change', renderTable);
+    document.getElementById('fReason').addEventListener('change', renderTable);
+    document.getElementById('fTag').addEventListener('change', renderTable);
+    document.getElementById('fCurrency').addEventListener('change', renderTable);
+    document.getElementById('fDateFrom').addEventListener('change', renderTable);
+    document.getElementById('fDateTo').addEventListener('change', renderTable);
+    document.getElementById('fSort').addEventListener('change', function() { applySort(this.value); });
+    document.getElementById('fSearch').addEventListener('input', renderTable);
+    document.getElementById('selectAllCb').addEventListener('change', function() { toggleSelectAll(this); });
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
+    });
+    const uploadZone = document.getElementById('uploadZone');
+    uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+    uploadZone.addEventListener('drop', e => {
+      e.preventDefault();
+      uploadZone.classList.remove('drag-over');
+      handleFileSelect(e);
+    });
+    if (localStorage.getItem(STORAGE_KEY)) {
+      document.getElementById('uploadZoneText').innerHTML += `<br><small style="color:#15803d">💡 Ada data tersimpan — klik "Load from Browser"</small>`;
+    }
+    const oldKey = 'albionGuildTreasuryV61';
+    if (!localStorage.getItem(STORAGE_KEY) && localStorage.getItem(oldKey)) {
+      try {
+        const oldData = JSON.parse(localStorage.getItem(oldKey));
+        rows = (oldData.rows || []).map(function(r) {
+          if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
+          if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
+          return r;
+        });
+        document.getElementById('initBal').value = oldData.initBal || 0;
+        saveToStorage();
+        localStorage.removeItem(oldKey);
+      } catch(e) {
+        console.warn('Legacy data corrupt, skipping migration');
+        localStorage.removeItem(oldKey);
+      }
+    }
+    refreshAll();
+    registerPWA();
+  } catch(err) {
+    console.error('App init error:', err);
+    document.body.innerHTML = '<div style="text-align:center;margin-top:100px;font-size:18px;color:#dc2626">❌ App gagal dimuat. Buka Console (F12) untuk detail error.</div>';
   }
-  refreshAll();
-  registerPWA();
 };
 
 // ==================== PWA ====================
@@ -1707,5 +1710,4 @@ function showUpdateBanner() {
   window.mergeDuplicates = mergeDuplicates;
   window.renderChart = renderChart;
   window.quickEditTag = quickEditTag;
-  window.exportPDF = exportPDF;
 })();
