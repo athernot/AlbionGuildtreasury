@@ -1523,10 +1523,6 @@ document.addEventListener('keydown', function(e) {
 
 // ==================== INIT ====================
 window.onload = async function () {
-  if (!await checkPassword()) {
-    document.body.innerHTML = '<div style="text-align:center;margin-top:100px;font-size:18px">❌ Akses ditolak. Refresh halaman untuk mencoba lagi.</div>';
-    return;
-  }
   await initDB();
   try {
     const savedAudit = localStorage.getItem('albionAuditLog');
@@ -1538,7 +1534,6 @@ window.onload = async function () {
   }
   updateStorageBadge();
   document.getElementById('initBal').addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
-  document.getElementById('pwBtn').addEventListener('click', togglePassword);
   document.getElementById('loadBtn').addEventListener('click', loadFromStorage);
   document.getElementById('backupBtn').addEventListener('click', saveJSONBackup);
   document.getElementById('resetBtn').addEventListener('click', resetAll);
@@ -1672,7 +1667,7 @@ function showUpdateBanner() {
   window.renderPeriod = renderPeriod;
   window.saveToStorage = saveToStorage;
   window.toggleDarkMode = toggleDarkMode;
-  window.togglePassword = togglePassword;
+  window.logout = logout;
   window.loadFromStorage = loadFromStorage;
   window.saveJSONBackup = saveJSONBackup;
   window.handleFileSelect = handleFileSelect;
