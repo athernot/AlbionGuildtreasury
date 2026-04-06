@@ -221,15 +221,7 @@
   return Date.now().toString(36) + Math.random().toString(36).substr(2, 8);
 }
 
-// ==================== PASSWORD ====================
-  async function hashPassword(str) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(str);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
+// ==================== AUTH ====================
   function toggleDarkMode() {
     document.body.classList.toggle('dark');
     const isDark = document.body.classList.contains('dark');
@@ -237,39 +229,11 @@
     document.getElementById('darkBtn').textContent = isDark ? '☀️' : '🌙';
   }
 
-  async function togglePassword() {
-  const saved = localStorage.getItem('treasuryPassword');
-  if (saved && !confirm('Password sudah aktif. Ganti password?')) return;
-  const pw = prompt('🔐 Masukkan password baru (kosongkan untuk menghapus):');
-  if (pw === null) return;
-  if (pw === '') {
-    localStorage.removeItem('treasuryPassword');
-    passwordHash = null;
-    alert('✅ Password protection dimatikan');
-  } else {
-    const confirmPw = prompt('🔐 Konfirmasi password:');
-    if (confirmPw !== pw) return alert('❌ Password tidak cocok!');
-    passwordHash = await hashPassword(pw);
-    localStorage.setItem('treasuryPassword', passwordHash);
-    alert('✅ Password protection diaktifkan!');
+  function logout() {
+    if (!confirm('🚪 Logout? Anda perlu login lagi untuk mengakses aplikasi.')) return;
+    localStorage.removeItem('guildTreasuryLicenseKey');
+    window.location.href = './login.html';
   }
-}
-
-async function checkPassword() {
-  const saved = localStorage.getItem('treasuryPassword');
-  if (!saved) return true;
-  const input = prompt('🔐 Masukkan password untuk membuka Guild Treasury:');
-  if (!input) return false;
-  const inputHash = await hashPassword(input);
-  if (inputHash === saved) return true;
-  if (btoa(encodeURIComponent(input)) === saved) {
-    passwordHash = inputHash;
-    localStorage.setItem('treasuryPassword', inputHash);
-    return true;
-  }
-  alert('❌ Password salah!');
-  return false;
-}
 
   // ==================== STORAGE (Hybrid) ====================
   /**

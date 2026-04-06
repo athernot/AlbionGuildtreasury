@@ -14,6 +14,11 @@
 <link rel="stylesheet" href="./style.css">
 <title>Albion Guild Balance Tracker V8.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+if (!localStorage.getItem('guildTreasuryLicenseKey')) {
+  window.location.href = './login.html';
+}
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -47,7 +52,7 @@
       <div>
         <span class="badge" id="storageBadge">Browser Storage: —</span>
         <button onclick="toggleDarkMode()" id="darkBtn" style="margin-left:4px;font-size:12px">🌙</button>
-        <button id="pwBtn" class="btn-primary" style="margin-left:8px;font-size:12px">🔐 Password</button>
+        <button onclick="logout()" style="margin-left:8px;font-size:12px" title="Logout">🚪 Logout</button>
       </div>
     </div>
     <div class="upload-zone" id="uploadZone">

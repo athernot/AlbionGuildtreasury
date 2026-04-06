@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Login - Albion Online Guild Treasury">
+<meta name="theme-color" content="#1e40af">
+<title>Login — Guild Treasury</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;background:#f4f4f4;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.login-wrap{background:#fff;border:1px solid #ddd;border-radius:16px;padding:2rem;width:100%;max-width:420px;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
+.login-header{text-align:center;margin-bottom:1.5rem}
+.login-header h1{font-size:18px;color:#1a1a1a;margin-bottom:4px}
+.login-header p{font-size:12px;color:#888}
+.login-form{display:flex;flex-direction:column;gap:12px}
+.login-form input{padding:12px 14px;border:1px solid #ccc;border-radius:10px;font-size:14px;background:#f9f9f9;color:#1a1a1a;width:100%;transition:border-color .2s;font-family:monospace;letter-spacing:2px}
+.login-form input:focus{outline:none;border-color:#1e40af;background:#fff}
+.login-form button{padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s}
+.login-btn{background:#1e40af;color:#fff}
+.login-btn:hover{background:#1e3a8a}
+.error-msg{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;font-size:12px;color:#991b1b;display:none;text-align:center}
+.success-msg{background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 12px;font-size:12px;color:#15803d;display:none;text-align:center}
+.hint{text-align:center;font-size:11px;color:#aaa;margin-top:12px}
+.device-id-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:16px;text-align:center}
+.device-id-box label{font-size:11px;color:#64748b;display:block;margin-bottom:6px}
+.device-id-box code{font-size:14px;font-weight:600;color:#1e40af;letter-spacing:1px;word-break:break-all;user-select:all}
+.copy-btn{background:none;border:none;font-size:16px;cursor:pointer;margin-left:6px;vertical-align:middle}
+.copy-btn:hover{transform:scale(1.2)}
+.dark-toggle{position:absolute;top:1rem;right:1rem;background:none;border:none;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:6px}
+.dark-toggle:hover{background:#e0e0e0}
+body.dark{background:#0f172a}
+body.dark .login-wrap{background:#1e293b;border-color:#334155;box-shadow:0 4px 24px rgba(0,0,0,0.3)}
+body.dark .login-header h1{color:#e2e8f0}
+body.dark .login-header p{color:#94a3b8}
+body.dark .login-form input{background:#0f172a;border-color:#334155;color:#e2e8f0}
+body.dark .login-form input:focus{border-color:#2563eb;background:#1e293b}
+body.dark .error-msg{background:#451a1a;border-color:#7f1d1d;color:#fca5a5}
+body.dark .success-msg{background:#14532d;border-color:#16a34a;color:#86efac}
+body.dark .device-id-box{background:#0f172a;border-color:#334155}
+body.dark .device-id-box label{color:#94a3b8}
+body.dark .device-id-box code{color:#93c5fd}
+body.dark .hint{color:#64748b}
+body.dark .dark-toggle:hover{background:#334155}
+</style>
+</head>
+<body>
+<button class="dark-toggle" onclick="toggleDarkMode()" id="darkBtn">🌙</button>
+<div class="login-wrap">
+  <div class="login-header">
+    <h1>🛡️ Guild Treasury</h1>
+    <p>Albion Online — Balance Tracker</p>
+  </div>
+
+  <div class="device-id-box">
+    <label>📱 Device ID Anda (kirim ke developer untuk mendapatkan key)</label>
+    <code id="deviceIdDisplay">—</code>
+    <button class="copy-btn" onclick="copyDeviceId()" title="Copy">📋</button>
+  </div>
+
+  <div class="error-msg" id="errorMsg"></div>
+  <div class="success-msg" id="successMsg"></div>
+
+  <form class="login-form" id="loginForm" onsubmit="handleLogin(event)">
+    <input type="text" id="loginKey" placeholder="Masukkan License Key" autocomplete="off" required>
+    <button type="submit" class="login-btn">🔓 Masuk</button>
+  </form>
+  <p class="hint">Key terikat ke device ini. Tidak bisa dipakai di device lain.</p>
+  <div style="text-align:center;margin-top:16px"><a href="./keygen.html" style="color:#1e40af;font-size:12px;text-decoration:none">🔑 Key Generator (Developer)</a></div>
+</div>
+
+<script>
+const DEVICE_ID_KEY = 'guildTreasuryDeviceId';
+const LICENSE_KEY = 'guildTreasuryLicenseKey';
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = '❌ ' + msg;
+  el.style.display = 'block';
+  document.getElementById('successMsg').style.display = 'none';
+  setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+
+function showSuccess(msg) {
+  const el = document.getElementById('successMsg');
+  el.textContent = '✅ ' + msg;
+  el.style.display = 'block';
+  document.getElementById('errorMsg').style.display = 'none';
+}
+
+function getDeviceId() {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    const arr = new Uint8Array(16);
+    crypto.getRandomValues(arr);
+    id = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('-');
+    id = id.substring(0, 23).toUpperCase();
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+async function hashKey(str) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function generateExpectedKey(deviceId) {
+  const secret = 'AlbionGuildTreasury2026!@#$';
+  const raw = deviceId.toUpperCase().replace(/-/g, '') + secret;
+  const hash = await hashKey(raw);
+  return hash.substring(0, 8).toUpperCase() + '-' + hash.substring(8, 16).toUpperCase() + '-' + hash.substring(16, 24).toUpperCase();
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const inputKey = document.getElementById('loginKey').value.trim();
+  if (!inputKey) return showError('License Key tidak boleh kosong!');
+
+  const deviceId = getDeviceId();
+  const expectedKey = await generateExpectedKey(deviceId);
+
+  if (inputKey.toUpperCase() === expectedKey) {
+    localStorage.setItem(LICENSE_KEY, inputKey.toUpperCase());
+    showSuccess('Login berhasil! Mengalihkan...');
+    setTimeout(() => { window.location.href = './index.html'; }, 800);
+  } else {
+    showError('License Key tidak valid untuk device ini!');
+    document.getElementById('loginKey').value = '';
+  }
+}
+
+function copyDeviceId() {
+  const id = document.getElementById('deviceIdDisplay').textContent;
+  navigator.clipboard.writeText(id).then(() => {
+    showSuccess('Device ID berhasil disalin!');
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = id;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showSuccess('Device ID berhasil disalin!');
+  });
+}
+
+function toggleDarkMode() {
+  document.body.classList.toggle('dark');
+  const isDark = document.body.classList.contains('dark');
+  localStorage.setItem('darkMode', isDark ? '1' : '0');
+  document.getElementById('darkBtn').textContent = isDark ? '☀️' : '🌙';
+}
+
+if (localStorage.getItem('darkMode') === '1') {
+  document.body.classList.add('dark');
+  document.getElementById('darkBtn').textContent = '☀️';
+}
+
+if (localStorage.getItem(LICENSE_KEY)) {
+  window.location.href = './index.html';
+}
+
+const deviceId = getDeviceId();
+document.getElementById('deviceIdDisplay').textContent = deviceId;
+document.getElementById('loginKey').focus();
+</script>
+</body>
+</html>
