@@ -3,8 +3,14 @@
   command = "echo 'No build step required'"
 
 [[redirects]]
+  from = "/"
+  to = "/login.html"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
-  to = "/index.html"
+  to = "/:splat"
   status = 200
 
 [[headers]]
