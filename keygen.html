@@ -13,8 +13,9 @@ body{font-family:Arial,sans-serif;background:#f4f4f4;min-height:100vh;display:fl
 h1{font-size:18px;text-align:center;margin-bottom:4px;color:#1a1a1a}
 .sub{text-align:center;font-size:12px;color:#888;margin-bottom:1.5rem}
 .form-group{display:flex;flex-direction:column;gap:12px}
-.form-group input{padding:12px 14px;border:1px solid #ccc;border-radius:10px;font-size:14px;background:#f9f9f9;color:#1a1a1a;width:100%;font-family:monospace;letter-spacing:2px}
-.form-group input:focus{outline:none;border-color:#1e40af;background:#fff}
+.form-group input,.form-group select{padding:12px 14px;border:1px solid #ccc;border-radius:10px;font-size:14px;background:#f9f9f9;color:#1a1a1a;width:100%;font-family:monospace;letter-spacing:2px}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:#1e40af;background:#fff}
+.form-group select{font-family:Arial,sans-serif;letter-spacing:normal}
 .form-group button{padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s}
 .gen-btn{background:#15803d;color:#fff}
 .gen-btn:hover{background:#166534}
@@ -23,6 +24,7 @@ h1{font-size:18px;text-align:center;margin-bottom:4px;color:#1a1a1a}
 .result-box code{font-size:18px;font-weight:700;color:#15803d;letter-spacing:2px;word-break:break-all;user-select:all;display:block;margin-bottom:8px}
 .result-box button{background:#1e40af;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;cursor:pointer;font-weight:600}
 .result-box button:hover{background:#1e3a8a}
+.result-box .expiry-info{font-size:11px;color:#92400e;margin-top:8px}
 .hint{text-align:center;font-size:11px;color:#aaa;margin-top:12px}
 .info-box{background:#dbeafe;border:1px solid #93c5fd;border-radius:10px;padding:12px;margin-bottom:16px;font-size:12px;color:#1e40af}
 .info-box strong{display:block;margin-bottom:4px}
@@ -40,11 +42,12 @@ body.dark{background:#0f172a}
 body.dark .wrap{background:#1e293b;border-color:#334155}
 body.dark h1{color:#e2e8f0}
 body.dark .sub,body.dark .hint{color:#94a3b8}
-body.dark .form-group input{background:#0f172a;border-color:#334155;color:#e2e8f0}
-body.dark .form-group input:focus{border-color:#2563eb}
+body.dark .form-group input,body.dark .form-group select{background:#0f172a;border-color:#334155;color:#e2e8f0}
+body.dark .form-group input:focus,body.dark .form-group select:focus{border-color:#2563eb}
 body.dark .result-box{background:#14532d;border-color:#16a34a}
 body.dark .result-box label{color:#94a3b8}
 body.dark .result-box code{color:#86efac}
+body.dark .result-box .expiry-info{color:#fde68a}
 body.dark .info-box{background:#1e3a5f;border-color:#2563eb;color:#93c5fd}
 body.dark .history-box{border-color:#334155}
 body.dark .history-item{background:#0f172a}
@@ -63,12 +66,20 @@ body.dark .dark-toggle:hover{background:#334155}
   <div class="info-box">
     <strong>📌 Cara Pakai:</strong>
     1. User buka app → copy Device ID<br>
-    2. Paste Device ID di bawah → klik Generate<br>
+    2. Paste Device ID di bawah → pilih masa berlaku → klik Generate<br>
     3. Kirim License Key ke user
   </div>
 
   <div class="form-group">
     <input type="text" id="deviceIdInput" placeholder="Paste Device ID (misal: A1B2C3D4-E5F6G7H8-I9J0K1L2)" autocomplete="off">
+    <select id="expirySelect">
+      <option value="7">7 hari</option>
+      <option value="14">14 hari</option>
+      <option value="30" selected>30 hari</option>
+      <option value="60">60 hari</option>
+      <option value="90">90 hari</option>
+      <option value="365">1 tahun</option>
+    </select>
     <button class="gen-btn" onclick="generateKey()">⚡ Generate License Key</button>
   </div>
 
@@ -76,6 +87,7 @@ body.dark .dark-toggle:hover{background:#334155}
     <label>License Key yang di-generate:</label>
     <code id="generatedKey"></code>
     <button onclick="copyKey()">📋 Copy Key</button>
+    <div class="expiry-info" id="expiryInfo"></div>
   </div>
 
   <div class="history-box" id="historyBox" style="display:none">
@@ -101,15 +113,28 @@ async function generateKey() {
   const deviceId = document.getElementById('deviceIdInput').value.trim().toUpperCase();
   if (!deviceId) return alert('Masukkan Device ID terlebih dahulu!');
 
-  const secret = 'AlbionGuildTreasury2026!@#$';
-  const raw = deviceId.replace(/-/g, '') + secret;
-  const hash = await hashKey(raw);
-  const key = hash.substring(0, 8).toUpperCase() + '-' + hash.substring(8, 16).toUpperCase() + '-' + hash.substring(16, 24).toUpperCase();
+  const days = parseInt(document.getElementById('expirySelect').value);
+  const expiryDate = new Date();
+  expiryDate.setDate(expiryDate.getDate() + days);
+  const expiryStr = expiryDate.getFullYear() +
+    String(expiryDate.getMonth() + 1).padStart(2, '0') +
+    String(expiryDate.getDate()).padStart(2, '0');
 
-  document.getElementById('generatedKey').textContent = key;
+  const secret = 'AlbionGuildTreasury2026!@#$';
+  const raw = deviceId.replace(/-/g, '') + secret + expiryStr;
+  const hash = await hashKey(raw);
+  const keyPart = hash.substring(0, 8).toUpperCase() + '-' +
+                  hash.substring(8, 16).toUpperCase() + '-' +
+                  hash.substring(16, 24).toUpperCase();
+  const fullKey = keyPart + ':' + expiryStr;
+
+  document.getElementById('generatedKey').textContent = fullKey;
   document.getElementById('resultBox').style.display = 'block';
 
-  saveToHistory(deviceId, key);
+  const expiryFormatted = expiryDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+  document.getElementById('expiryInfo').textContent = '⏳ Berlaku sampai: ' + expiryFormatted + ' (' + days + ' hari)';
+
+  saveToHistory(deviceId, fullKey, expiryFormatted);
 }
 
 function copyKey() {
@@ -127,10 +152,10 @@ function copyKey() {
   });
 }
 
-function saveToHistory(deviceId, key) {
+function saveToHistory(deviceId, key, expiry) {
   let history = [];
   try { history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch(e) {}
-  history.unshift({ deviceId, key, date: new Date().toISOString() });
+  history.unshift({ deviceId, key, expiry, date: new Date().toISOString() });
   if (history.length > 50) history = history.slice(0, 50);
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   renderHistory();
@@ -146,7 +171,7 @@ function renderHistory() {
   list.innerHTML = history.map((h, i) => {
     const d = new Date(h.date).toLocaleString('id-ID');
     return '<div class="history-item">' +
-      '<div><code>' + escHtml(h.deviceId) + '</code><br><span style="color:#94a3b8;font-size:10px">' + d + '</span></div>' +
+      '<div><code>' + escHtml(h.deviceId) + '</code><br><span style="color:#94a3b8;font-size:10px">' + d + ' • Exp: ' + escHtml(h.expiry || '-') + '</span></div>' +
       '<div style="display:flex;align-items:center;gap:6px">' +
         '<code>' + escHtml(h.key) + '</code>' +
         '<button class="del-btn" onclick="deleteHistory(' + i + ')" title="Hapus">🗑</button>' +

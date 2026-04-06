@@ -65,12 +65,13 @@ body.dark .dark-toggle:hover{background:#334155}
     <input type="text" id="loginKey" placeholder="Masukkan License Key" autocomplete="off" required>
     <button type="submit" class="login-btn">🔓 Masuk</button>
   </form>
-  <p class="hint">Key terikat ke device ini. Tidak bisa dipakai di device lain.</p>
+  <p class="hint">Key terikat ke device ini dan memiliki masa berlaku.</p>
 </div>
 
 <script>
 const DEVICE_ID_KEY = 'guildTreasuryDeviceId';
 const LICENSE_KEY = 'guildTreasuryLicenseKey';
+const LICENSE_EXPIRY = 'guildTreasuryKeyExpiry';
 
 function showError(msg) {
   const el = document.getElementById('errorMsg');
@@ -107,11 +108,28 @@ async function hashKey(str) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function generateExpectedKey(deviceId) {
+async function generateExpectedKey(deviceId, expiryStr) {
   const secret = 'AlbionGuildTreasury2026!@#$';
-  const raw = deviceId.toUpperCase().replace(/-/g, '') + secret;
+  const raw = deviceId.toUpperCase().replace(/-/g, '') + secret + expiryStr;
   const hash = await hashKey(raw);
-  return hash.substring(0, 8).toUpperCase() + '-' + hash.substring(8, 16).toUpperCase() + '-' + hash.substring(16, 24).toUpperCase();
+  const keyPart = hash.substring(0, 8).toUpperCase() + '-' +
+                  hash.substring(8, 16).toUpperCase() + '-' +
+                  hash.substring(16, 24).toUpperCase();
+  return keyPart + ':' + expiryStr;
+}
+
+function parseKey(fullKey) {
+  const parts = fullKey.trim().split(':');
+  if (parts.length !== 2) return null;
+  return { keyPart: parts[0], expiryStr: parts[1] };
+}
+
+function isExpired(expiryStr) {
+  const y = parseInt(expiryStr.substring(0, 4));
+  const m = parseInt(expiryStr.substring(4, 6)) - 1;
+  const d = parseInt(expiryStr.substring(6, 8));
+  const expiryDate = new Date(y, m, d, 23, 59, 59);
+  return new Date() > expiryDate;
 }
 
 async function handleLogin(e) {
@@ -119,11 +137,19 @@ async function handleLogin(e) {
   const inputKey = document.getElementById('loginKey').value.trim();
   if (!inputKey) return showError('License Key tidak boleh kosong!');
 
+  const parsed = parseKey(inputKey);
+  if (!parsed) return showError('Format License Key tidak valid!');
+
+  if (isExpired(parsed.expiryStr)) {
+    return showError('License Key sudah kadaluarsa! Minta key baru ke developer.');
+  }
+
   const deviceId = getDeviceId();
-  const expectedKey = await generateExpectedKey(deviceId);
+  const expectedKey = await generateExpectedKey(deviceId, parsed.expiryStr);
 
   if (inputKey.toUpperCase() === expectedKey) {
     localStorage.setItem(LICENSE_KEY, inputKey.toUpperCase());
+    localStorage.setItem(LICENSE_EXPIRY, parsed.expiryStr);
     showSuccess('Login berhasil! Mengalihkan...');
     setTimeout(() => { window.location.href = './index.html'; }, 800);
   } else {
@@ -160,7 +186,14 @@ if (localStorage.getItem('darkMode') === '1') {
 }
 
 if (localStorage.getItem(LICENSE_KEY)) {
-  window.location.href = './index.html';
+  const expiry = localStorage.getItem(LICENSE_EXPIRY);
+  if (expiry && !isExpired(expiry)) {
+    window.location.href = './index.html';
+  } else {
+    localStorage.removeItem(LICENSE_KEY);
+    localStorage.removeItem(LICENSE_EXPIRY);
+    showError('Key sudah kadaluarsa. Login ulang dengan key baru.');
+  }
 }
 
 const deviceId = getDeviceId();

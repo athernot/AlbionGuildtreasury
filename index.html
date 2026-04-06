@@ -15,9 +15,22 @@
 <title>Albion Guild Balance Tracker V8.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
-if (!localStorage.getItem('guildTreasuryLicenseKey')) {
-  window.location.href = './login.html';
-}
+(function() {
+  var key = localStorage.getItem('guildTreasuryLicenseKey');
+  var expiry = localStorage.getItem('guildTreasuryKeyExpiry');
+  if (!key) { window.location.href = './login.html'; return; }
+  if (expiry) {
+    var y = parseInt(expiry.substring(0,4));
+    var m = parseInt(expiry.substring(4,6)) - 1;
+    var d = parseInt(expiry.substring(6,8));
+    var expDate = new Date(y, m, d, 23, 59, 59);
+    if (new Date() > expDate) {
+      localStorage.removeItem('guildTreasuryLicenseKey');
+      localStorage.removeItem('guildTreasuryKeyExpiry');
+      window.location.href = './login.html';
+    }
+  }
+})();
 </script>
 </head>
 <body>
