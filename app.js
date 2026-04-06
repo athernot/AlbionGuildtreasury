@@ -1533,6 +1533,7 @@ window.onload = async function () {
     }
     updateStorageBadge();
     document.getElementById('initBal').addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
+    document.getElementById('logoutBtn').addEventListener('click', logout);
     document.getElementById('loadBtn').addEventListener('click', loadFromStorage);
     document.getElementById('backupBtn').addEventListener('click', saveJSONBackup);
     document.getElementById('resetBtn').addEventListener('click', resetAll);
