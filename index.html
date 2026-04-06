@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Albion Online Guild Treasury Balance Tracker & Transaction Log">
+<meta name="theme-color" content="#1e40af">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Guild Treasury">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231e40af'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial'>G</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231e40af'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial'>G</text></svg>">
+<link rel="stylesheet" href="./style.css">
+<title>Albion Guild Balance Tracker V8.0</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header-card">
+    <div class="header-top">
+      <div>
+        <div class="guild-title">Guild Treasury — Albion Online <span class="badge" style="background:#1e40af;color:#fff;font-size:10px;vertical-align:middle">V8.0</span></div>
+        <div class="guild-sub">Balance Tracker &amp; Transaction Log</div>
+      </div>
+      <div class="balance-area">
+        <span class="balance-label">Initial Balance:</span>
+        <input class="balance-input" id="initBal" type="number" value="0" placeholder="0">
+      </div>
+    </div>
+    <div class="stats-row">
+      <div class="stat"><div class="stat-label">Current Balance</div><div class="stat-value amber" id="st-bal">0</div></div>
+      <div class="stat"><div class="stat-label">Net 24 Jam Terakhir</div><div class="stat-value" id="st-net24">0</div></div>
+      <div class="stat"><div class="stat-label">Net Minggu Ini</div><div class="stat-value" id="st-netWeek">0</div></div>
+      <div class="stat"><div class="stat-label">Total Deposit</div><div class="stat-value green" id="st-dep">0</div></div>
+      <div class="stat"><div class="stat-label">Total Withdrawal</div><div class="stat-value red" id="st-wit">0</div></div>
+      <div class="stat"><div class="stat-label">Networth (Total)</div><div class="stat-value" id="st-net">0</div></div>
+      <div class="stat"><div class="stat-label">Transactions</div><div class="stat-value" id="st-cnt">0</div></div>
+    </div>
+  </div>
+
+  <!-- DATA MANAGEMENT -->
+  <div class="section-card">
+    <div class="section-header">
+      <span class="section-title">① Data Management (V8.0)</span>
+      <div>
+        <span class="badge" id="storageBadge">Browser Storage: —</span>
+        <button onclick="toggleDarkMode()" id="darkBtn" style="margin-left:4px;font-size:12px">🌙</button>
+        <button id="pwBtn" class="btn-primary" style="margin-left:8px;font-size:12px">🔐 Password</button>
+      </div>
+    </div>
+    <div class="upload-zone" id="uploadZone">
+      <input type="file" accept=".xlsx,.xls,.json" id="excelFile" onchange="handleFileSelect(event)">
+      <div class="upload-zone-text" id="uploadZoneText">📂 Klik atau drag &amp; drop file Excel / JSON di sini</div>
+      <div class="upload-zone-sub">.xlsx (dari tracker lama) atau .json backup</div>
+    </div>
+    <div class="btn-row" style="margin-top:12px;gap:8px">
+      <button id="loadBtn" class="btn-primary">📂 Load from Browser</button>
+      <button id="backupBtn" class="btn-green">💾 Save JSON Backup</button>
+      <button id="resetBtn" class="btn-danger">🗑 Reset Semua Data</button>
+    </div>
+    <div id="lastSaved" class="hint" style="margin-top:6px;display:none"></div>
+    <div class="hint" style="margin-top:8px">Data otomatis tersimpan. Drag &amp; drop juga didukung.</div>
+  </div>
+
+  <!-- PASTE LOG -->
+  <div class="section-card">
+    <div class="section-header">
+      <span class="section-title">② Paste Log Baru</span>
+      <span class="badge">Input</span>
+    </div>
+    <textarea id="logInput" placeholder='Paste log here, contoh:&#10;"Date" "Player" "Reason" "Amount"&#10;"2026-04-01 05:05:40" "M0W" "Withdrawal" "-1000000"'></textarea>
+    <div class="hint">Format: "Date" "Player" "Reason" "Amount" — Duplikat otomatis dilewati.</div>
+    <div class="btn-row">
+      <button id="parseBtn" class="btn-primary">⚡ Parse &amp; Load</button>
+      <button id="addManualBtn" class="btn-green">➕ Tambah Manual</button>
+      <button id="clearLogBtn">Clear</button>
+    </div>
+  </div>
+
+  <!-- NOTICES -->
+  <div id="dupNotice">
+    <div class="dup-header">
+      <div class="dup-title">⚠ <span id="dupTitleText">Duplikat Ditemukan &amp; Dilewati</span></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button id="mergeDupBtn" class="btn-primary" style="font-size:11px;padding:3px 10px" onclick="mergeDuplicates()">🔗 Merge Duplikat</button>
+        <button class="dup-close" onclick="document.getElementById('dupNotice').style.display='none'">✕</button>
+      </div>
+    </div>
+    <div class="dup-summary" id="dupSummary"></div>
+    <div class="dup-table-wrap">
+      <table class="dup-table">
+        <thead><tr><th>#</th><th>Tanggal &amp; Jam</th><th>Player</th><th>Reason</th><th>Amount</th><th>Status</th></tr></thead>
+        <tbody id="dupBody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div id="okNotice">
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none"><path d="M10 2a8 8 0 100 16A8 8 0 0010 2zm4.03 6.47l-4.5 4.5a.75.75 0 01-1.06 0l-2-2a.75.75 0 011.06-1.06l1.47 1.47 3.97-3.97a.75.75 0 011.06 1.06z" fill="#059669"/></svg>
+    <span id="okText"></span>
+  </div>
+
+  <!-- MAIN SECTION -->
+  <div class="section-card">
+    <div class="section-header" style="margin-bottom:6px">
+      <span class="section-title">Data Treasury</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="badge" id="tbl-badge">0 rows</span>
+        <button id="dlBtn" class="btn-green" disabled style="font-size:12px;padding:5px 12px;opacity:0.4;cursor:not-allowed">⬇ Download Excel</button>
+        <button id="csvBtn" class="btn-primary" style="font-size:12px;padding:5px 12px">📄 Export CSV</button>
+        <button id="pdfBtn" style="font-size:12px;padding:5px 12px">📋 Export PDF</button>
+      </div>
+    </div>
+
+    <!-- TAB ROW -->
+    <div class="tab-row">
+      <button class="tab-btn active" data-tab="0">📋 Log Transaksi</button>
+      <button class="tab-btn" data-tab="1">📅 Rekap Mingguan &amp; Harian</button>
+      <button class="tab-btn" data-tab="2">📅 Rekap per Tanggal 1 (Bulanan)</button>
+      <button class="tab-btn" data-tab="3">📊 Grafik Trend</button>
+    </div>
+
+    <!-- TAB 0: LOG -->
+    <div class="tab-panel active" id="tab-0">
+      <div class="bulk-bar" id="bulkBar">
+        <span class="bulk-count" id="bulkCountBar">0 dipilih</span>
+        <button onclick="openBulkModal()" class="bulk-btn-del">🗑 Hapus Terpilih</button>
+        <button onclick="selectAllVisible()" class="bulk-btn-sel">✅ Pilih Semua</button>
+        <button onclick="clearSelection()" class="bulk-btn-clear">✖ Batal</button>
+      </div>
+      <div class="filter-row">
+        <label>Player:</label>
+        <select id="fPlayer" onchange="renderTable()"><option value="">All</option></select>
+        <label>Reason:</label>
+        <select id="fReason" onchange="renderTable()"><option value="">All</option></select>
+        <label>Tag:</label>
+        <select id="fTag" onchange="renderTable()"><option value="">All</option></select>
+        <label>Currency:</label>
+        <select id="fCurrency" onchange="renderTable()"><option value="">All</option></select>
+        <label>Dari:</label>
+        <input type="datetime-local" id="fDateFrom" onchange="renderTable()">
+        <label>Sampai:</label>
+        <input type="datetime-local" id="fDateTo" onchange="renderTable()">
+        <label>Sort:</label>
+        <select id="fSort" onchange="applySort(this.value)">
+          <option value="desc">Terbaru</option>
+          <option value="asc">Terlama</option>
+        </select>
+        <input type="text" id="fSearch" placeholder="Search..." oninput="renderTable()" style="width:140px">
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="cb-cell"><input type="checkbox" id="selectAllCb" onchange="toggleSelectAll(this)" title="Pilih semua"></th>
+              <th onclick="sortTable(0)" class="sortable" data-col="0">#</th>
+              <th onclick="sortTable(1)" class="sortable" data-col="1">Date &amp; Time</th>
+              <th onclick="sortTable(2)" class="sortable" data-col="2">Player</th>
+              <th onclick="sortTable(3)" class="sortable" data-col="3">Reason</th>
+              <th onclick="sortTable(4)" class="sortable" data-col="4">Tag</th>
+              <th onclick="sortTable(5)" class="sortable" data-col="5">Currency</th>
+              <th onclick="sortTable(6)" class="sortable" data-col="6">Amount</th>
+              <th onclick="sortTable(7)" class="sortable" data-col="7">Running Balance</th>
+              <th style="width:90px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tblBody">
+            <tr><td colspan="10" class="empty">Load data Excel lama atau paste log baru</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination"></div>
+    </div>
+
+    <!-- TAB 1: Rekap Mingguan & Harian -->
+    <div class="tab-panel" id="tab-1">
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">Menampilkan selisih (networth) transaksi per minggu dan per hari. Minggu dihitung dari tanggal 1.</div>
+      <div id="periodGrid" class="monthly-grid">
+        <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Rekap per Tanggal 1 (Bulanan) -->
+    <div class="tab-panel" id="tab-2">
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">Saldo Awal tiap bulan dihitung dari tanggal 1 (sisa saldo bulan sebelumnya).</div>
+      <div id="monthlyGrid" class="monthly-grid">
+        <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Grafik Trend -->
+    <div class="tab-panel" id="tab-3">
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">Visualisasi trend transaksi per bulan.</div>
+      <div class="filter-row" style="margin-bottom:12px">
+        <label>Tipe:</label>
+        <select id="chartType" onchange="renderChart()">
+          <option value="bar">Bar Chart</option>
+          <option value="line">Line Chart</option>
+          <option value="both">Bar + Line</option>
+        </select>
+        <label>Metrik:</label>
+        <select id="chartMetric" onchange="renderChart()">
+          <option value="net">Net (Masuk - Keluar)</option>
+          <option value="dep">Total Masuk</option>
+          <option value="wit">Total Keluar</option>
+          <option value="count">Jumlah Transaksi</option>
+        </select>
+      </div>
+      <div id="chartContainer" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;min-height:280px;position:relative;overflow-x:auto">
+        <div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT MODAL -->
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <h3 style="margin-bottom:16px">✏️ Edit Transaksi</h3>
+    <div id="editError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:12px;display:none"></div>
+    <input id="editDate" type="datetime-local" placeholder="2026-04-01T05:05">
+    <input id="editPlayer" type="text" placeholder="Player Name">
+    <input id="editReason" type="text" placeholder="Reason / Keterangan">
+    <input id="editTag" type="text" placeholder="Tag (opsional)">
+    <select id="editCurrency"><option value="Silver">Silver</option><option value="Gold">Gold</option><option value="Fame">Fame</option><option value="Other">Other</option></select>
+    <input id="editAmount" type="number" placeholder="Amount (negatif = withdrawal)">
+    <div class="btn-row" style="margin-top:20px">
+      <button onclick="saveEdit()" class="btn-green">💾 Simpan Perubahan</button>
+      <button onclick="closeModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD TRANSACTION MODAL -->
+<div id="addModal" class="modal">
+  <div class="modal-content">
+    <h3 style="margin-bottom:16px">➕ Tambah Transaksi Baru</h3>
+    <div id="addError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:12px;display:none"></div>
+    <input id="addDate" type="datetime-local" placeholder="2026-04-01T05:05">
+    <input id="addPlayer" type="text" placeholder="Player Name">
+    <input id="addReason" type="text" placeholder="Reason / Keterangan">
+    <input id="addTag" type="text" placeholder="Tag (opsional, misal: War, Raid, Tax)">
+    <select id="addCurrency"><option value="Silver">Silver</option><option value="Gold">Gold</option><option value="Fame">Fame</option><option value="Other">Other</option></select>
+    <input id="addAmount" type="number" placeholder="Amount (negatif = withdrawal)">
+    <div class="btn-row" style="margin-top:20px">
+      <button onclick="saveAdd()" class="btn-green">💾 Simpan</button>
+      <button onclick="closeAddModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- RESET CONFIRM MODAL -->
+<div id="resetModal" class="modal">
+  <div class="modal-content" style="max-width:500px">
+    <h3 style="margin-bottom:12px">⚠️ Reset Semua Data</h3>
+    <p style="font-size:13px;color:#64748b;margin-bottom:16px">Tindakan ini akan menghapus semua transaksi secara permanen. Backup otomatis akan dibuat sebelum reset.</p>
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:#92400e">
+      <strong>Jumlah transaksi:</strong> <span id="resetTxCount">0</span><br>
+      <strong>Backup otomatis:</strong> Akan diunduh sebagai JSON
+    </div>
+    <div class="btn-row" style="margin-top:16px">
+      <button onclick="confirmReset()" class="btn-danger" style="background:#dc2626;color:#fff;border-color:#dc2626">🗑 Ya, Reset & Backup</button>
+      <button onclick="closeResetModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- BULK DELETE MODAL -->
+<div id="bulkModal" class="modal">
+  <div class="modal-content" style="max-width:500px">
+    <h3 style="margin-bottom:12px">🗑️ Hapus Terpilih</h3>
+    <p style="font-size:13px;color:#64748b;margin-bottom:16px">Hapus <strong id="bulkCount">0</strong> transaksi yang dipilih?</p>
+    <div class="btn-row" style="margin-top:16px">
+      <button onclick="confirmBulkDelete()" class="btn-danger" style="background:#dc2626;color:#fff;border-color:#dc2626">🗑 Hapus Terpilih</button>
+      <button onclick="closeBulkModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- LOADING OVERLAY -->
+<div id="loadingOverlay">
+  <div class="loading-spinner">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loadingText">Memproses...</div>
+  </div>
+</div>
+
+<!-- PWA BANNER -->
+<div id="pwaBanner">
+  <span id="pwaBannerText">📲 Install aplikasi untuk akses offline</span>
+  <div style="display:flex;gap:6px">
+    <button id="pwaInstallBtn" class="pwa-btn-install" style="display:none">Install</button>
+    <button id="pwaUpdateBtn" class="pwa-btn-update" style="display:none">Update Tersedia</button>
+    <button class="pwa-btn-dismiss" onclick="document.getElementById('pwaBanner').classList.remove('visible')">✕</button>
+  </div>
+</div>
+
+<!-- TOASTS -->
+<div id="dlToast">
+  <span id="dlToastText"></span>
+  <button class="toast-close" onclick="hideToast('dlToast')">✕</button>
+</div>
+<div id="undoToast" style="display:none">
+  <span id="undoToastText"></span>
+  <button onclick="undoDelete()" style="background:#22c55e;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:13px">Undo</button>
+  <button class="toast-close" onclick="hideToast('undoToast')">✕</button>
+</div>
+
+<script src="./app.js"></script>
+</body>
+</html>
