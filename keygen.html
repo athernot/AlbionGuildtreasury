@@ -174,6 +174,7 @@ function renderHistory() {
       '<div><code>' + escHtml(h.deviceId) + '</code><br><span style="color:#94a3b8;font-size:10px">' + d + ' • Exp: ' + escHtml(h.expiry || '-') + '</span></div>' +
       '<div style="display:flex;align-items:center;gap:6px">' +
         '<code>' + escHtml(h.key) + '</code>' +
+        '<button class="del-btn" onclick="revokeDevice(\'' + escHtml(h.deviceId) + '\')" title="Revoke (logout user)">🚫</button>' +
         '<button class="del-btn" onclick="deleteHistory(' + i + ')" title="Hapus">🗑</button>' +
       '</div></div>';
   }).join('');
@@ -185,6 +186,34 @@ function deleteHistory(idx) {
   history.splice(idx, 1);
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   renderHistory();
+}
+
+function revokeDevice(deviceId) {
+  if (!confirm('Revoke device ' + deviceId + '?\nUser akan otomatis logout saat buka app.')) return;
+  fetch('./revoked_devices.json?t=' + Date.now())
+    .then(r => r.json())
+    .then(data => {
+      if (!data.revoked_devices) data.revoked_devices = [];
+      if (data.revoked_devices.indexOf(deviceId) === -1) {
+        data.revoked_devices.push(deviceId);
+      }
+      return data;
+    })
+    .then(data => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'revoked_devices.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      alert('✅ revoked_devices.json berhasil diunduh!\n\nLangkah selanjutnya:\n1. Upload file ini ke repo GitHub Anda\n2. Ganti file revoked_devices.json yang lama\n3. Commit & push\n4. Netlify akan auto-redeploy\n5. User akan otomatis logout');
+    })
+    .catch(() => {
+      alert('❌ Gagal membaca revoked_devices.json');
+    });
 }
 
 function escHtml(str) {

@@ -28,8 +28,37 @@
       localStorage.removeItem('guildTreasuryLicenseKey');
       localStorage.removeItem('guildTreasuryKeyExpiry');
       window.location.href = './login.html';
+      return;
     }
   }
+  var deviceId = localStorage.getItem('guildTreasuryDeviceId');
+  if (deviceId) {
+    fetch('./revoked_devices.json?t=' + Date.now()).then(function(r) {
+      if (!r.ok) return;
+      return r.json();
+    }).then(function(data) {
+      if (data && data.revoked_devices && data.revoked_devices.indexOf(deviceId) !== -1) {
+        localStorage.removeItem('guildTreasuryLicenseKey');
+        localStorage.removeItem('guildTreasuryKeyExpiry');
+        window.location.href = './login.html?revoked=1';
+      }
+    }).catch(function() {});
+  }
+  setInterval(function() {
+    var dId = localStorage.getItem('guildTreasuryDeviceId');
+    if (!dId) return;
+    fetch('./revoked_devices.json?t=' + Date.now()).then(function(r) {
+      if (!r.ok) return;
+      return r.json();
+    }).then(function(data) {
+      if (data && data.revoked_devices && data.revoked_devices.indexOf(dId) !== -1) {
+        localStorage.removeItem('guildTreasuryLicenseKey');
+        localStorage.removeItem('guildTreasuryKeyExpiry');
+        alert('🚫 Akses Anda telah dicabut oleh developer.');
+        window.location.href = './login.html?revoked=1';
+      }
+    }).catch(function() {});
+  }, 60000);
 })();
 </script>
 </head>

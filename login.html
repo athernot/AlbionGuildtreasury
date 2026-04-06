@@ -196,6 +196,11 @@ if (localStorage.getItem(LICENSE_KEY)) {
   }
 }
 
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('revoked') === '1') {
+  showError('Akses Anda telah dicabut. Hubungi developer untuk mendapatkan key baru.');
+}
+
 const deviceId = getDeviceId();
 document.getElementById('deviceIdDisplay').textContent = deviceId;
 document.getElementById('loginKey').focus();
