@@ -2,7 +2,6 @@ const CACHE_NAME = 'albion-treasury-v4';
 const ASSETS = [
   './',
   './login.html',
-  './keygen.html',
   './index.html',
   './style.css',
   './app.js',

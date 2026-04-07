@@ -127,6 +127,8 @@
         return r;
       });
       balMapCache = null;
+      sortedRowsCache = null;
+      statsCache = null;
       document.getElementById('initBal').value = config ? config.initBal : 0;
       return true;
     }
@@ -157,7 +159,15 @@
    * @param {string} str
    * @returns {string}
    */
-  function escHtml(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
+   function escHtml(str) {
+   if (str == null) return '';
+   return String(str)
+     .replace(/&/g, '&amp;')
+     .replace(/</g, '&lt;')
+     .replace(/>/g, '&gt;')
+     .replace(/"/g, '&quot;')
+     .replace(/'/g, '&#039;');
+ }
 
   /**
    * Validate date string format (YYYY-MM-DD HH:MM:SS minimum)
@@ -177,10 +187,13 @@
    * @param {string} dateStr
    * @returns {number}
    */
-  function getTimestamp(dateStr) {
-  if (!dateStr) return 0;
-  const normalized = dateStr.replace(' ', 'T');
-  return new Date(normalized).getTime();
+   function getTimestamp(dateStr) {
+   if (!dateStr) return 0;
+   const normalized = dateStr.replace(' ', 'T');
+   const d = new Date(normalized);
+   if (isNaN(d.getTime())) return 0;
+   // Compensate for timezone offset to ensure consistent date comparison
+   return d.getTime() + d.getTimezoneOffset() * 60000;
 }
 
   /**
@@ -238,20 +251,36 @@
    * Save data to localStorage or IndexedDB (debounced 300ms)
    * @returns {Promise<void>}
    */
-  async function saveToStorage() {
+let savePendingPromise = null;
+let savePendingResolve = null;
+let savePendingReject = null;
+
+async function saveToStorage() {
+  // Clear existing timer if any
   if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
-  return new Promise(resolve => {
+  
+  // Return a new promise that will be resolved/rejected after debounce
+  return new Promise((resolve, reject) => {
     saveDebounceTimer = setTimeout(async () => {
-      const init = parseFloat(document.getElementById('initBal').value) || 0;
-      if (useIndexedDB && db) {
-        try { await saveToIndexedDB(); } catch(e) {}
-      } else {
-        const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      try {
+        const init = parseFloat(document.getElementById('initBal').value) || 0;
+        if (useIndexedDB && db) {
+          try { await saveToIndexedDB(); } catch(e) {
+            // Fallback to localStorage on IndexedDB error
+            useIndexedDB = false;
+            const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          }
+        } else {
+          const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+        lastSavedTime = Date.now();
+        updateStorageBadge();
+        resolve();
+      } catch (error) {
+        reject(error);
       }
-      lastSavedTime = Date.now();
-      updateStorageBadge();
-      resolve();
     }, 300);
   });
 }
@@ -267,7 +296,13 @@ async function loadFromStorage() {
     }
   }
   const saved = localStorage.getItem(STORAGE_KEY);
-  if (!saved) return alert('❌ Belum ada data di browser.');
+  if (!saved) {
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = '⚠️ Belum ada data tersimpan di browser. Upload file Excel/JSON atau paste log baru.';
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 4000);
+    return;
+  }
   if (!confirm('Load data dari browser? Data saat ini akan terganti.')) return;
   let data;
   try { data = JSON.parse(saved); } catch(e) { return alert('❌ Data di browser rusak/corrupt. Hapus data browser atau import backup JSON.'); }
@@ -278,6 +313,8 @@ async function loadFromStorage() {
     return r;
   });
   balMapCache = null;
+  sortedRowsCache = null;
+  statsCache = null;
   existingKeysCache = new Set(rows.map(rowKey));
   dirtyIds.added.clear();
   dirtyIds.deleted.clear();
@@ -354,6 +391,8 @@ function updateStorageBadge() {
           return r;
         });
         balMapCache = null;
+        sortedRowsCache = null;
+        statsCache = null;
         document.getElementById('initBal').value = data.initBal || 0;
         document.getElementById('uploadZone').classList.add('upload-loaded');
         let msg = '✅ ' + escHtml(file.name) + ' (JSON) — ' + validRows.length + ' transaksi';
@@ -388,6 +427,8 @@ function updateStorageBadge() {
           validCount++;
         }
         balMapCache = null;
+        sortedRowsCache = null;
+        statsCache = null;
         document.getElementById('uploadZone').classList.add('upload-loaded');
         let msg = '✅ ' + escHtml(file.name) + ' — ' + validCount + ' transaksi';
         if (invalidCount > 0) msg += ' (' + invalidCount + ' baris dilewati)';
@@ -433,6 +474,9 @@ function updateStorageBadge() {
     }
     hideLoading();
     showNotices(added.length, duplicates);
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
     saveToStorage();
     refreshAll();
   }, 50);
@@ -481,8 +525,7 @@ function mergeDuplicates() {
     if (g.count > 1) {
       const existing = rows.find(function(r) { return rowKey(r) === key; });
       if (existing) {
-        existing.amount += (g.amount - existing.amount);
-        existing.amount = g.amount;
+        existing.amount += g.amount;
         mergedCount++;
       }
     }
@@ -491,6 +534,8 @@ function mergeDuplicates() {
   document.getElementById('dupNotice').style.display = 'none';
   document.getElementById('mergeDupBtn').style.display = 'none';
   balMapCache = null;
+  sortedRowsCache = null;
+  statsCache = null;
   saveToStorage();
   refreshAll();
   document.getElementById('okText').textContent = '✅ ' + mergedCount + ' duplikat di-merge (amount dijumlahkan).';
@@ -499,16 +544,44 @@ function mergeDuplicates() {
 }
 
 // ==================== STATS & BALANCE MAP ====================
-  // Recalculate all stats (balance, deposits, withdrawals, net)
-  function recalc() {
+  // Unified function: compute stats + balance map in one traversal
+  let statsCache = null;
+
+  function computeStatsAndBalMap() {
   const init = parseFloat(document.getElementById('initBal').value) || 0;
-  let dep = 0, wit = 0, net24 = 0, netWeek = 0;
+  const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+    ? sortedRowsCache
+    : [...rows].sort((a, b) => a.date.localeCompare(b.date));
+
+  let dep = 0, wit = 0, net = 0;
   let latestTime = 0;
-  rows.forEach(r => {
+  let run = init;
+  const map = {};
+
+  sorted.forEach(r => {
+    if (r.amount > 0) dep += r.amount; else wit += r.amount;
     const t = new Date(r.date.replace(' ', 'T')).getTime();
     if (t > latestTime) latestTime = t;
+    run += r.amount;
+    map[rowKey(r)] = run;
   });
-  if (!latestTime) {
+
+  net = dep + wit;
+  statsCache = { init, dep, wit, net, latestTime, rowCount: rows.length };
+  balMapCache = map;
+  sortedRowsCache = sorted;
+  return { map, stats: statsCache };
+}
+
+  // Recalculate all stats (balance, deposits, withdrawals, net)
+  function recalc() {
+  if (!statsCache || statsCache.rowCount !== rows.length || balMapCache === null) {
+    computeStatsAndBalMap();
+  }
+  const s = statsCache;
+  const init = parseFloat(document.getElementById('initBal').value) || 0;
+
+  if (!s.latestTime) {
     document.getElementById('st-bal').textContent = fmt(init);
     document.getElementById('st-dep').textContent = '0';
     document.getElementById('st-wit').textContent = '0';
@@ -521,22 +594,25 @@ function mergeDuplicates() {
     document.getElementById('st-netWeek').className = 'stat-value amber';
     return;
   }
-  const latestDate = new Date(latestTime);
+
+  // Compute net24 and netWeek from balMapCache (sorted iteration)
+  const latestDate = new Date(s.latestTime);
   const latestYm = latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0');
   const latestWeek = getWeekOfMonth(latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0') + '-' + String(latestDate.getDate()).padStart(2,'0') + ' ' + String(latestDate.getHours()).padStart(2,'0') + ':' + String(latestDate.getMinutes()).padStart(2,'0') + ':' + String(latestDate.getSeconds()).padStart(2,'0'));
-  rows.forEach(r => {
-    if (r.amount > 0) dep += r.amount; else wit += r.amount;
+  let net24 = 0, netWeek = 0;
+  sortedRowsCache.forEach(r => {
     const rt = new Date(r.date.replace(' ', 'T')).getTime();
-    if (latestTime - rt <= 86400000) net24 += r.amount;
+    if (s.latestTime - rt <= 86400000) net24 += r.amount;
     const rDate = new Date(r.date.replace(' ', 'T'));
     const rYm = rDate.getFullYear() + '-' + String(rDate.getMonth()+1).padStart(2,'0');
     const rWeek = getWeekOfMonth(r.date);
     if (rYm === latestYm && rWeek === latestWeek) netWeek += r.amount;
   });
-  const net = dep + wit;
+
+  const net = s.dep + s.wit;
   document.getElementById('st-bal').textContent = fmt(init + net);
-  document.getElementById('st-dep').textContent = fmt(dep);
-  document.getElementById('st-wit').textContent = fmt(wit);
+  document.getElementById('st-dep').textContent = fmt(s.dep);
+  document.getElementById('st-wit').textContent = fmt(s.wit);
   document.getElementById('st-cnt').textContent = rows.length;
   const netEl = document.getElementById('st-net');
   netEl.textContent = (net >= 0 ? '+' : '') + fmt(net);
@@ -551,32 +627,32 @@ function mergeDuplicates() {
 
   // Calculate running balance map for all transactions (sorted by date)
   function buildBalMap() {
-  balMapCacheVersion++;
-  const init = parseFloat(document.getElementById('initBal').value) || 0;
-  const sorted = [...rows].sort((a,b) => a.date.localeCompare(b.date));
-  let run = init;
-  const map = {};
-  sorted.forEach(r => {
-    run += r.amount;
-    map[rowKey(r)] = run;
-  });
-  balMapCache = map;
-  return map;
+  if (balMapCache && statsCache && statsCache.rowCount === rows.length) {
+    return balMapCache;
+  }
+  computeStatsAndBalMap();
+  return balMapCache;
 }
+
+let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
 
 // ==================== FILTERS & TABLE (FILTER TANGGAL SUDAH DIFIX) ====================
   // Update filter dropdowns (player, reason) from current data
   function updateFilters() {
-  const players = [...new Set(rows.map(r => r.player))].sort();
-  const reasons = [...new Set(rows.map(r => r.reason))].sort();
-  const tags = [...new Set(rows.map(r => r.tag || '').filter(Boolean))].sort();
-  const currencies = [...new Set(rows.map(r => r.currency || 'Silver'))].sort();
+  const version = rows.length;
+  if (filterCache.version !== version) {
+    filterCache.players = [...new Set(rows.map(r => r.player))].sort();
+    filterCache.reasons = [...new Set(rows.map(r => r.reason))].sort();
+    filterCache.tags = [...new Set(rows.map(r => r.tag || '').filter(Boolean))].sort();
+    filterCache.currencies = [...new Set(rows.map(r => r.currency || 'Silver'))].sort();
+    filterCache.version = version;
+  }
   const fp = document.getElementById('fPlayer'), fr = document.getElementById('fReason'), ft = document.getElementById('fTag'), fc = document.getElementById('fCurrency');
   const pv = fp.value, rv = fr.value, tv = ft ? ft.value : '', cv = fc ? fc.value : '';
-  fp.innerHTML = '<option value="">All</option>' + players.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
-  fr.innerHTML = '<option value="">All</option>' + reasons.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
-  if (ft) ft.innerHTML = '<option value="">All</option>' + tags.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
-  if (fc) fc.innerHTML = '<option value="">All</option>' + currencies.map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
+  fp.innerHTML = '<option value="">All</option>' + filterCache.players.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+  fr.innerHTML = '<option value="">All</option>' + filterCache.reasons.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+  if (ft) ft.innerHTML = '<option value="">All</option>' + filterCache.tags.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
+  if (fc) fc.innerHTML = '<option value="">All</option>' + filterCache.currencies.map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
   fp.value = pv; fr.value = rv; if (ft) ft.value = tv; if (fc) fc.value = cv;
 }
 
@@ -589,84 +665,99 @@ function mergeDuplicates() {
     const fromVal = document.getElementById('fDateFrom').value;
     const toVal = document.getElementById('fDateTo').value;
     const sq = document.getElementById('fSearch').value.toLowerCase();
-    let data = [...rows];
-    if (fp) data = data.filter(r => r.player === fp);
-    if (fr) data = data.filter(r => r.reason === fr);
-    if (ft) data = data.filter(r => (r.tag || '') === ft);
-    if (fc) data = data.filter(r => (r.currency || 'Silver') === fc);
-    if (fromVal) {
-      const fromTime = new Date(fromVal.replace('T', ' ') + ':00').getTime();
-      data = data.filter(r => getTimestamp(r.date) >= fromTime);
+
+    // Precompute time values to avoid repeated parsing
+    const fromTime = fromVal ? new Date(fromVal.replace('T', ' ') + ':00').getTime() : 0;
+    const toTime = toVal ? new Date(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59').getTime() : 0;
+
+    // Single pass filter instead of multiple .filter() chains
+    const data = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (fp && r.player !== fp) continue;
+      if (fr && r.reason !== fr) continue;
+      if (ft && (r.tag || '') !== ft) continue;
+      if (fc && (r.currency || 'Silver') !== fc) continue;
+      if (fromTime && getTimestamp(r.date) < fromTime) continue;
+      if (toTime && getTimestamp(r.date) > toTime) continue;
+      if (sq) {
+        const playerMatch = r.playerLc || r.player.toLowerCase();
+        const reasonMatch = r.reasonLc || r.reason.toLowerCase();
+        const tagMatch = (r.tag || '').toLowerCase();
+        if (!playerMatch.includes(sq) && !reasonMatch.includes(sq) && !tagMatch.includes(sq) && !r.date.includes(sq)) continue;
+      }
+      data.push(r);
     }
-    if (toVal) {
-      const toTime = new Date(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59').getTime();
-      data = data.filter(r => getTimestamp(r.date) <= toTime);
-    }
-    if (sq) data = data.filter(r => (r.playerLc || r.player.toLowerCase()).includes(sq) || (r.reasonLc || r.reason.toLowerCase()).includes(sq) || (r.tag || '').toLowerCase().includes(sq) || r.date.includes(sq));
     return data;
   }
 
   // Render transaction table with filters, sorting, and checkboxes
-  function renderTable() {
-  if (!balMapCache) balMapCache = buildBalMap();
-  let data = getFilteredRows();
+   function renderTable() {
+   if (!balMapCache) balMapCache = buildBalMap();
+   let data = getFilteredRows();
 
-  // Sorting
-  data.sort((a, b) => {
-    let va, vb;
-    switch (currentSort.col) {
-      case 1: va = a.date; vb = b.date; break;
-      case 2: va = a.player; vb = b.player; break;
-      case 3: va = a.reason; vb = b.reason; break;
-      case 4: va = a.tag || ''; vb = b.tag || ''; break;
-      case 5: va = a.currency || 'Silver'; vb = b.currency || 'Silver'; break;
-      case 6: va = a.amount; vb = b.amount; break;
-      case 7: va = balMapCache[rowKey(a)]; vb = balMapCache[rowKey(b)]; break;
-      default: va = a.date; vb = b.date;
-    }
-    if (typeof va === 'number' && typeof vb === 'number') {
-      return currentSort.dir === 'asc' ? va - vb : vb - va;
-    }
-    return currentSort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-  });
+   // Create a map for O(1) lookup of row index in original rows array
+   const rowIndexMap = new Map();
+   rows.forEach((row, index) => {
+     rowIndexMap.set(row.id, index);
+   });
 
-  const total = data.length;
-  const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
-  if (currentPage > totalPages) currentPage = totalPages;
-  const start = (currentPage - 1) * rowsPerPage;
-  const pageData = data.slice(start, start + rowsPerPage);
+   // Sorting
+   data.sort((a, b) => {
+     let va, vb;
+     switch (currentSort.col) {
+       case 1: va = a.date; vb = b.date; break;
+       case 2: va = a.player; vb = b.player; break;
+       case 3: va = a.reason; vb = b.reason; break;
+       case 4: va = a.tag || ''; vb = b.tag || ''; break;
+       case 5: va = a.currency || 'Silver'; vb = b.currency || 'Silver'; break;
+       case 6: va = a.amount; vb = b.amount; break;
+       case 7: va = balMapCache[rowKey(a)]; vb = balMapCache[rowKey(b)]; break;
+       default: va = a.date; vb = b.date;
+     }
+     if (typeof va === 'number' && typeof vb === 'number') {
+       return currentSort.dir === 'asc' ? va - vb : vb - va;
+     }
+     return currentSort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+   });
 
-  document.getElementById('tbl-badge').textContent = rows.length + ' rows';
-  const tbody = document.getElementById('tblBody');
-  if (!total) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">Tidak ada data yang cocok</td></tr>';
-    document.getElementById('pagination').className = 'pagination hidden';
-    return;
-  }
-  tbody.innerHTML = pageData.map((r, i) => {
-    const bal = balMapCache[rowKey(r)] ?? '';
-    const pill = r.reason.toLowerCase().includes('deposit') ? 'pill-dep' : r.reason.toLowerCase().includes('withdrawal') ? 'pill-wit' : 'pill-oth';
-    const checked = selectedIds.has(r.id) ? 'checked' : '';
-    const globalIdx = rows.indexOf(r) + 1;
-    return '<tr>' +
-      '<td class="cb-cell"><input type="checkbox" ' + checked + ' onchange="toggleSelect(\'' + r.id + '\', this)"></td>' +
-      '<td style="color:#aaa;font-size:11px">' + (globalIdx > 0 ? globalIdx : start + i + 1) + '</td>' +
-      '<td style="font-size:12px">' + escHtml(r.date) + '</td>' +
-      '<td style="font-weight:600">' + escHtml(r.player) + '</td>' +
-      '<td><span class="pill ' + pill + '">' + escHtml(r.reason) + '</span></td>' +
-      '<td>' + (r.tag ? '<span class="pill pill-oth" style="cursor:pointer" onclick="quickEditTag(\'' + r.id + '\')" title="Klik untuk edit tag">' + escHtml(r.tag) + '</span>' : '<span style="color:#ccc;cursor:pointer;font-size:11px" onclick="quickEditTag(\'' + r.id + '\')">+ tag</span>') + '</td>' +
-      '<td><span class="pill pill-oth">' + escHtml(r.currency || 'Silver') + '</span></td>' +
-      '<td class="' + (r.amount>=0?'amount-pos':'amount-neg') + '">' + fmt(r.amount) + '</td>' +
-      '<td style="font-weight:600;font-size:12px">' + fmt(bal) + '</td>' +
-      '<td class="action-btns">' +
-        '<span onclick="editTransaction(\'' + r.id + '\')" title="Edit">✏️</span>' +
-        '<span onclick="deleteTransaction(\'' + r.id + '\')" title="Delete">🗑️</span>' +
-      '</td>' +
-    '</tr>';
-  }).join('');
-  renderPagination(total, totalPages, start);
-  updateBulkBar();
-}
+   const total = data.length;
+   const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
+   if (currentPage > totalPages) currentPage = totalPages;
+   const start = (currentPage - 1) * rowsPerPage;
+   const pageData = data.slice(start, start + rowsPerPage);
+
+   document.getElementById('tbl-badge').textContent = rows.length + ' rows';
+   const tbody = document.getElementById('tblBody');
+   if (!total) {
+     tbody.innerHTML = '<tr><td colspan="10" class="empty">Tidak ada data yang cocok</td></tr>';
+     document.getElementById('pagination').className = 'pagination hidden';
+     return;
+   }
+   tbody.innerHTML = pageData.map((r, i) => {
+     const bal = balMapCache[rowKey(r)] ?? '';
+     const pill = r.reason.toLowerCase().includes('deposit') ? 'pill-dep' : r.reason.toLowerCase().includes('withdrawal') ? 'pill-wit' : 'pill-oth';
+     const checked = selectedIds.has(r.id) ? 'checked' : '';
+     const globalIdx = (rowIndexMap.get(r.id) !== undefined ? rowIndexMap.get(r.id) + 1 : start + i + 1);
+     return '<tr>' +
+       '<td class="cb-cell"><input type="checkbox" ' + checked + ' onchange="toggleSelect(\'' + r.id + '\', this)"></td>' +
+       '<td style="color:#aaa;font-size:11px">' + globalIdx + '</td>' +
+       '<td style="font-size:12px">' + escHtml(r.date) + '</td>' +
+       '<td style="font-weight:600">' + escHtml(r.player) + '</td>' +
+       '<td><span class="pill ' + pill + '">' + escHtml(r.reason) + '</span></td>' +
+       '<td>' + (r.tag ? '<span class="pill pill-oth" style="cursor:pointer" onclick="quickEditTag(\'' + r.id + '\')" title="Klik untuk edit tag">' + escHtml(r.tag) + '</span>' : '<span style="color:#ccc;cursor:pointer;font-size:11px" onclick="quickEditTag(\'' + r.id + '\')">+ tag</span>') + '</td>' +
+       '<td><span class="pill pill-oth">' + escHtml(r.currency || 'Silver') + '</span></td>' +
+       '<td class="' + (r.amount>=0?'amount-pos':'amount-neg') + '">' + fmt(r.amount) + '</td>' +
+       '<td style="font-weight:600;font-size:12px">' + fmt(bal) + '</td>' +
+       '<td class="action-btns">' +
+         '<span onclick="editTransaction(\'' + r.id + '\')" title="Edit">✏️</span>' +
+         '<span onclick="deleteTransaction(\'' + r.id + '\')" title="Delete">🗑️</span>' +
+       '</td>' +
+     '</tr>';
+   }).join('');
+   renderPagination(total, totalPages, start);
+   updateBulkBar();
+ }
 
 function renderPagination(total, totalPages, start) {
   const container = document.getElementById('pagination');
@@ -721,18 +812,21 @@ function changeRPP(n) {
 
 // ==================== CRUD ====================
 function deleteTransaction(id) {
-  if (!confirm('🗑️ Hapus transaksi ini secara permanen?')) return;
-  const tx = rows.find(r => r.id === id);
-  if (!tx) return;
-  lastDeleted = { ...tx };
-  existingKeysCache.delete(rowKey(tx));
-  dirtyIds.deleted.add(tx.id);
-  rows = rows.filter(r => r.id !== id);
-  balMapCache = null;
-  logAudit('delete', { id: tx.id, player: tx.player, reason: tx.reason, amount: tx.amount, date: tx.date });
-  saveToStorage();
-  refreshAll();
-  showUndoToast();
+   if (!confirm('🗑️ Hapus transaksi ini secara permanen?')) return;
+   const tx = rows.find(r => r.id === id);
+   if (!tx) return;
+   const index = rows.indexOf(tx);
+   lastDeleted = { ...tx, _originalIndex: index };
+   existingKeysCache.delete(rowKey(tx));
+   dirtyIds.deleted.add(tx.id);
+   rows = rows.filter(r => r.id !== id);
+   balMapCache = null;
+   sortedRowsCache = null;
+   statsCache = null;
+   logAudit('delete', { id: tx.id, player: tx.player, reason: tx.reason, amount: tx.amount, date: tx.date });
+   saveToStorage();
+   refreshAll();
+   showUndoToast();
 }
 
 function showUndoToast() {
@@ -745,27 +839,36 @@ function showUndoToast() {
 }
 
 function undoDelete() {
-  if (lastDeleted) {
-    if (!lastDeleted.playerLc) lastDeleted.playerLc = lastDeleted.player.toLowerCase();
-    if (!lastDeleted.reasonLc) lastDeleted.reasonLc = lastDeleted.reason.toLowerCase();
-    rows.push(lastDeleted);
-    existingKeysCache.add(rowKey(lastDeleted));
-    lastDeleted = null;
-  } else if (lastBulkDeleted) {
-    lastBulkDeleted.forEach(function(r) {
-      if (!r.playerLc) r.playerLc = r.player.toLowerCase();
-      if (!r.reasonLc) r.reasonLc = r.reason.toLowerCase();
-    });
-    rows = rows.concat(lastBulkDeleted);
-    lastBulkDeleted.forEach(function(r) { existingKeysCache.add(rowKey(r)); });
-    lastBulkDeleted = null;
-  } else {
-    return;
-  }
-  hideToast('undoToast');
-  if (undoTimeout) clearTimeout(undoTimeout);
-  saveToStorage();
-  refreshAll();
+   if (lastDeleted) {
+     if (!lastDeleted.playerLc) lastDeleted.playerLc = lastDeleted.player.toLowerCase();
+     if (!lastDeleted.reasonLc) lastDeleted.reasonLc = lastDeleted.reason.toLowerCase();
+     // Insert back at original position instead of pushing to end
+     const index = lastDeleted._originalIndex;
+     if (index !== undefined && index >= 0 && index <= rows.length) {
+       rows.splice(index, 0, lastDeleted);
+     } else {
+       rows.push(lastDeleted); // fallback
+     }
+     existingKeysCache.add(rowKey(lastDeleted));
+     lastDeleted = null;
+   } else if (lastBulkDeleted) {
+     lastBulkDeleted.forEach(function(r) {
+       if (!r.playerLc) r.playerLc = r.player.toLowerCase();
+       if (!r.reasonLc) r.reasonLc = r.reason.toLowerCase();
+     });
+     rows = rows.concat(lastBulkDeleted);
+     lastBulkDeleted.forEach(function(r) { existingKeysCache.add(rowKey(r)); });
+     lastBulkDeleted = null;
+   } else {
+     return;
+   }
+   hideToast('undoToast');
+   if (undoTimeout) clearTimeout(undoTimeout);
+   balMapCache = null;
+   sortedRowsCache = null;
+   statsCache = null;
+   saveToStorage();
+   refreshAll();
 }
 
 function editTransaction(id) {
@@ -782,37 +885,62 @@ function editTransaction(id) {
 }
 
 function saveEdit() {
-  if (!editingId) return;
-  const tx = rows.find(r => r.id === editingId);
-  if (!tx) return;
-  const newDate = document.getElementById('editDate').value.trim().replace('T', ' ');
-  const newPlayer = document.getElementById('editPlayer').value.trim();
-  const newReason = document.getElementById('editReason').value.trim();
-  const newTag = document.getElementById('editTag').value.trim();
-  const newCurrency = document.getElementById('editCurrency').value;
-  const newAmount = document.getElementById('editAmount').value;
-  const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
-  if (!newDate) return showEditError('Tanggal tidak boleh kosong!');
-  if (!newPlayer) return showEditError('Player name tidak boleh kosong!');
-  if (!newReason) return showEditError('Reason tidak boleh kosong!');
-  if (!isValidDate(dateStr)) return showEditError('Format tanggal tidak valid!');
-  if (newAmount === '' || newAmount === null || newAmount === undefined) return showEditError('Amount tidak boleh kosong! Gunakan 0 untuk transaksi netral.');
-  const amountNum = parseFloat(newAmount);
-  if (isNaN(amountNum)) return showEditError('Amount harus berupa angka!');
-  if (!isFinite(amountNum)) return showEditError('Amount tidak valid (Infinity)!');
-  if (Math.abs(amountNum) > 9e15) return showEditError('Amount terlalu besar! Maks: 9.000.000.000.000.000');
-  tx.date = dateStr;
-  tx.player = newPlayer;
-  tx.reason = newReason;
-  tx.tag = newTag || '';
-  tx.currency = newCurrency;
-  tx.amount = amountNum;
-  tx.playerLc = newPlayer.toLowerCase();
-  tx.reasonLc = newReason.toLowerCase();
-  logAudit('edit', { id: tx.id, oldPlayer: tx.player, newPlayer: newPlayer, oldReason: tx.reason, newReason: newReason, oldTag: tx.tag, newTag: newTag, oldCurrency: tx.currency, newCurrency: newCurrency, oldAmount: tx.amount, newAmount: amountNum });
-  closeModal();
-  saveToStorage();
-  refreshAll();
+   if (!editingId) return;
+   const tx = rows.find(r => r.id === editingId);
+   if (!tx) return;
+   const newDate = document.getElementById('editDate').value.trim().replace('T', ' ');
+   const newPlayer = document.getElementById('editPlayer').value.trim();
+   const newReason = document.getElementById('editReason').value.trim();
+   const newTag = document.getElementById('editTag').value.trim();
+   const newCurrency = document.getElementById('editCurrency').value;
+   const newAmount = document.getElementById('editAmount').value;
+   const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
+   if (!newDate) return showEditError('Tanggal tidak boleh kosong!');
+   if (!newPlayer) return showEditError('Player name tidak boleh kosong!');
+   if (!newReason) return showEditError('Reason tidak boleh kosong!');
+   if (!isValidDate(dateStr)) return showEditError('Format tanggal tidak valid!');
+   if (newAmount === '' || newAmount === null || newAmount === undefined) return showEditError('Amount tidak boleh kosong! Gunakan 0 untuk transaksi netral.');
+   const amountNum = parseFloat(newAmount);
+   if (isNaN(amountNum)) return showEditError('Amount harus berupa angka!');
+   if (!isFinite(amountNum)) return showEditError('Amount tidak valid (Infinity)!');
+   if (Math.abs(amountNum) > 9e15) return showEditError('Amount terlalu besar! Maks: 9.000.000.000.000.000');
+   
+   // Capture old values BEFORE overwriting
+   const oldValues = {
+     id: tx.id,
+     date: tx.date,
+     player: tx.player,
+     reason: tx.reason,
+     tag: tx.tag,
+     currency: tx.currency,
+     amount: tx.amount,
+     playerLc: tx.playerLc,
+     reasonLc: tx.reasonLc
+   };
+   
+   tx.date = dateStr;
+   tx.player = newPlayer;
+   tx.reason = newReason;
+   tx.tag = newTag || '';
+   tx.currency = newCurrency;
+   tx.amount = amountNum;
+   tx.playerLc = newPlayer.toLowerCase();
+   tx.reasonLc = newReason.toLowerCase();
+   
+   logAudit('edit', { 
+     id: tx.id, 
+     oldPlayer: oldValues.player, newPlayer: newPlayer, 
+     oldReason: oldValues.reason, newReason: newReason,
+     oldTag: oldValues.tag, newTag: newTag,
+     oldCurrency: oldValues.currency, newCurrency: newCurrency,
+     oldAmount: oldValues.amount, newAmount: amountNum
+   });
+   closeModal();
+   balMapCache = null;
+   sortedRowsCache = null;
+   statsCache = null;
+   saveToStorage();
+   refreshAll();
 }
 
 function showEditError(msg) {
@@ -876,6 +1004,8 @@ function saveAdd() {
   existingKeysCache.add(rowKey(entry));
   dirtyIds.added.add(entry.id);
   balMapCache = null;
+  sortedRowsCache = null;
+  statsCache = null;
   logAudit('add', { id: entry.id, player: newPlayer, reason: newReason, tag: newTag || '', amount: amountNum, date: dateStr });
   closeAddModal();
   saveToStorage();
@@ -901,7 +1031,10 @@ function quickEditTag(id) {
   // Build weekly/daily period aggregation data
   function buildPeriodData() {
   const grouped = {};
-  const sorted = [...rows].sort((a,b) => b.date.localeCompare(a.date));
+  // Use cached sorted rows (ascending), then iterate in reverse for newest-first
+  const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+    ? [...sortedRowsCache].reverse()
+    : [...rows].sort((a,b) => b.date.localeCompare(a.date));
   sorted.forEach(r => {
     const ymd = r.date.substring(0,10);
     const ym = r.date.substring(0,7);
@@ -958,7 +1091,9 @@ function renderPeriod() {
   // Build monthly aggregation data (open balance, deposits, withdrawals, close balance)
   function buildMonthlyData() {
   const init = parseFloat(document.getElementById('initBal').value) || 0;
-  const sorted = [...rows].sort((a,b) => a.date.localeCompare(b.date));
+  const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+    ? sortedRowsCache
+    : [...rows].sort((a,b) => a.date.localeCompare(b.date));
   const monthOrder = [], monthMap = {};
   let run = init;
   sorted.forEach(r => {
@@ -1345,18 +1480,21 @@ function closeBulkModal() {
 }
 
 function confirmBulkDelete() {
-  if (selectedIds.size === 0) return;
-  const count = selectedIds.size;
-  lastBulkDeleted = rows.filter(r => selectedIds.has(r.id)).map(function(r) { return Object.assign({}, r); });
-  lastBulkDeleted.forEach(function(r) { dirtyIds.deleted.add(r.id); });
-  lastBulkDeleted.forEach(function(r) { existingKeysCache.delete(rowKey(r)); });
-  rows = rows.filter(r => !selectedIds.has(r.id));
-  logAudit('bulk_delete', { count: count, ids: Array.from(selectedIds) });
-  selectedIds.clear();
-  closeBulkModal();
-  document.getElementById('selectAllCb').checked = false;
-  saveToStorage();
-  refreshAll();
+   if (selectedIds.size === 0) return;
+   const count = selectedIds.size;
+   lastBulkDeleted = rows.filter(r => selectedIds.has(r.id)).map(function(r) { return Object.assign({}, r); });
+   lastBulkDeleted.forEach(function(r) { dirtyIds.deleted.add(r.id); });
+   lastBulkDeleted.forEach(function(r) { existingKeysCache.delete(rowKey(r)); });
+   rows = rows.filter(r => !selectedIds.has(r.id));
+   logAudit('bulk_delete', { count: count, ids: Array.from(selectedIds) });
+   selectedIds.clear();
+   closeBulkModal();
+   document.getElementById('selectAllCb').checked = false;
+   balMapCache = null;
+   sortedRowsCache = null;
+   statsCache = null;
+   saveToStorage();
+   refreshAll();
   const toast = document.getElementById('undoToast');
   document.getElementById('undoToastText').innerHTML = `🗑 ${count} transaksi dihapus. <strong>Undo?</strong>`;
   toast.style.display = 'flex';
@@ -1375,6 +1513,10 @@ function resetAll() {
     document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
     document.getElementById('dupNotice').style.display = 'none';
     document.getElementById('okNotice').className = '';
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
     saveToStorage();
     refreshAll();
     return;
@@ -1406,19 +1548,23 @@ async function confirmReset() {
     return alert('❌ Gagal membuat backup. Reset dibatalkan.');
   }
   if (!backupOk) { hideLoading(); return; }
-  existingKeysCache.clear();
-  rows = [];
-  selectedIds.clear();
-  document.getElementById('selectAllCb').checked = false;
-  document.getElementById('logInput').value = '';
-  document.getElementById('excelFile').value = '';
-  document.getElementById('uploadZone').className = 'upload-zone';
-  document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
-  document.getElementById('dupNotice').style.display = 'none';
-  document.getElementById('okNotice').className = '';
-  closeResetModal();
-  saveToStorage();
-  refreshAll();
+   existingKeysCache.clear();
+   rows = [];
+   selectedIds.clear();
+   document.getElementById('selectAllCb').checked = false;
+   document.getElementById('logInput').value = '';
+   document.getElementById('excelFile').value = '';
+   document.getElementById('uploadZone').className = 'upload-zone';
+   document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
+   document.getElementById('dupNotice').style.display = 'none';
+   document.getElementById('okNotice').className = '';
+   closeResetModal();
+   balMapCache = null;
+   sortedRowsCache = null;
+   statsCache = null;
+   filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+   saveToStorage();
+   refreshAll();
   hideLoading();
   const toast = document.getElementById('dlToast');
   document.getElementById('dlToastText').textContent = '✅ Data direset. Backup telah diunduh.';
@@ -1475,6 +1621,8 @@ function hideLoading() {
   // Refresh all UI components (filters, stats, tables, recaps)
   function refreshAll() {
   balMapCache = null;
+  sortedRowsCache = null;
+  statsCache = null;
   updateFilters();
   recalc();
   renderTable();
