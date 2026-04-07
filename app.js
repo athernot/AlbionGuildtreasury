@@ -1402,7 +1402,45 @@ function showSyphonUndoToast() {
   document.getElementById('dlToastText').innerHTML = `Syphon dihapus. <strong>Undo?</strong>`;
   toast.style.display = 'flex';
   toast.classList.add('show');
-  setTimeout(() => hideToast('dlToast'), 5000);
+  toast.onclick = undoSyphon;
+  if (undoTimeout) clearTimeout(undoTimeout);
+  undoTimeout = setTimeout(() => hideToast('dlToast'), 5000);
+}
+
+function undoSyphon() {
+  if (syphonLastDeleted) {
+    if (!syphonLastDeleted.playerLc) syphonLastDeleted.playerLc = syphonLastDeleted.player.toLowerCase();
+    if (!syphonLastDeleted.reasonLc) syphonLastDeleted.reasonLc = syphonLastDeleted.reason.toLowerCase();
+    const index = syphonLastDeleted._originalIndex;
+    if (index !== undefined && index >= 0 && index <= syphonRows.length) {
+      syphonRows.splice(index, 0, syphonLastDeleted);
+    } else {
+      syphonRows.push(syphonLastDeleted);
+    }
+    syphonExistingKeysCache.add(rowKey(syphonLastDeleted));
+    syphonDirtyIds.deleted.delete(syphonLastDeleted.id);
+    syphonLastDeleted = null;
+  } else if (syphonLastBulkDeleted && syphonLastBulkDeleted.length > 0) {
+    syphonLastBulkDeleted.forEach(r => {
+      if (!r.playerLc) r.playerLc = r.player.toLowerCase();
+      if (!r.reasonLc) r.reasonLc = r.reason.toLowerCase();
+    });
+    syphonRows = syphonRows.concat(syphonLastBulkDeleted);
+    syphonLastBulkDeleted.forEach(r => {
+      syphonExistingKeysCache.add(rowKey(r));
+      syphonDirtyIds.deleted.delete(r.id);
+    });
+    syphonLastBulkDeleted = null;
+  } else {
+    return;
+  }
+  hideToast('dlToast');
+  if (undoTimeout) clearTimeout(undoTimeout);
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  saveSyphonToStorage();
+  refreshSyphon();
 }
 
 function editSyphonTransaction(id) {
@@ -1574,11 +1612,11 @@ function closeSyphonBulkModal() {
 function confirmSyphonBulkDelete() {
   if (syphonSelectedIds.size === 0) return closeSyphonBulkModal();
   const toDelete = Array.from(syphonSelectedIds);
-  syphonLastBulkDeleted = syphonRows.filter(r => toDelete.includes(r.id));
+  syphonLastBulkDeleted = syphonRows.filter(r => toDelete.includes(r.id)).map(r => Object.assign({}, r));
   syphonRows = syphonRows.filter(r => !toDelete.includes(r.id));
-  toDelete.forEach(id => {
-    syphonExistingKeysCache.delete(id);
-    syphonDirtyIds.deleted.add(id);
+  syphonLastBulkDeleted.forEach(r => {
+    syphonExistingKeysCache.delete(rowKey(r));
+    syphonDirtyIds.deleted.add(r.id);
   });
   syphonSelectedIds.clear();
   syphonBalMapCache = null;
@@ -1588,9 +1626,10 @@ function confirmSyphonBulkDelete() {
   refreshSyphon();
   closeSyphonBulkModal();
   const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').textContent = `✅ ${toDelete.length} syphon dihapus.`;
+  document.getElementById('dlToastText').innerHTML = `🗑 ${toDelete.length} syphon dihapus. <strong>Undo?</strong>`;
   toast.classList.add('show');
-  setTimeout(() => hideToast('dlToast'), 3000);
+  if (undoTimeout) clearTimeout(undoTimeout);
+  undoTimeout = setTimeout(() => hideToast('dlToast'), 5000);
 }
 
 function syphonSortTable(col) {
@@ -2364,6 +2403,9 @@ function refreshSyphon() {
       closeAddModal();
       closeResetModal();
       closeBulkModal();
+      closeSyphonModal();
+      closeSyphonAddModal();
+      closeSyphonBulkModal();
       document.getElementById('dupNotice').style.display = 'none';
     }
     if (ctrl && e.key === 'f') {
@@ -2606,6 +2648,7 @@ function showUpdateBanner() {
   window.saveSyphonEdit = saveSyphonEdit;
   window.closeSyphonModal = closeSyphonModal;
   window.deleteSyphonTransaction = deleteSyphonTransaction;
+  window.undoSyphon = undoSyphon;
   window.toggleSyphonSelect = toggleSyphonSelect;
   window.syphonToggleSelectAll = syphonToggleSelectAll;
   window.syphonSelectAllVisible = syphonSelectAllVisible;
