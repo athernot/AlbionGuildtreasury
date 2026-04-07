@@ -35,6 +35,9 @@
   let dirtyIds = { added: new Set(), deleted: new Set() };
   let lastDuplicates = [];
   let auditLog = [];
+  let sortedRowsCache = null;
+  let statsCache = null;
+  let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
 
   function logAudit(action, details) {
   auditLog.push({ timestamp: new Date().toISOString(), action: action, details: details });
@@ -545,8 +548,6 @@ function mergeDuplicates() {
 
 // ==================== STATS & BALANCE MAP ====================
   // Unified function: compute stats + balance map in one traversal
-  let statsCache = null;
-
   function computeStatsAndBalMap() {
   const init = parseFloat(document.getElementById('initBal').value) || 0;
   const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
@@ -633,8 +634,6 @@ function mergeDuplicates() {
   computeStatsAndBalMap();
   return balMapCache;
 }
-
-let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
 
 // ==================== FILTERS & TABLE (FILTER TANGGAL SUDAH DIFIX) ====================
   // Update filter dropdowns (player, reason) from current data
