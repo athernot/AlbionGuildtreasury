@@ -253,6 +253,22 @@
   return Date.now().toString(36) + Math.random().toString(36).substr(2, 8);
 }
 
+// ==================== HELPERS ====================
+  function getInitialBalance() {
+    const el = document.getElementById('initBal');
+    return el ? parseFloat(el.value) || 0 : 0;
+  }
+
+  function setInitialBalance(val) {
+    const el = document.getElementById('initBal');
+    if (el) el.value = val;
+  }
+
+  function safeAddListener(id, event, handler) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(event, handler);
+  }
+
 // ==================== AUTH ====================
   function toggleDarkMode() {
     document.body.classList.toggle('dark');
@@ -2432,38 +2448,43 @@ window.onload = async function () {
       setTimeout(() => toggleSyphonMode(), 100);
     }
     updateStorageBadge();
-    document.getElementById('initBal').addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
-    document.getElementById('logoutBtn').addEventListener('click', logout);
-    document.getElementById('loadBtn').addEventListener('click', loadFromStorage);
-    document.getElementById('backupBtn').addEventListener('click', saveJSONBackup);
-    document.getElementById('resetBtn').addEventListener('click', resetAll);
-    document.getElementById('parseBtn').addEventListener('click', parseLog);
-    document.getElementById('addManualBtn').addEventListener('click', openAddModal);
-    document.getElementById('clearLogBtn').addEventListener('click', function() { document.getElementById('logInput').value = ''; });
-    document.getElementById('dlBtn').addEventListener('click', autoDownloadExcel);
-    document.getElementById('csvBtn').addEventListener('click', exportCSV);
-    document.getElementById('pdfBtn').addEventListener('click', exportPDF);
-    document.getElementById('fPlayer').addEventListener('change', renderTable);
-    document.getElementById('fReason').addEventListener('change', renderTable);
-    document.getElementById('fTag').addEventListener('change', renderTable);
-    document.getElementById('fCurrency').addEventListener('change', renderTable);
-    document.getElementById('fDateFrom').addEventListener('change', renderTable);
-    document.getElementById('fDateTo').addEventListener('change', renderTable);
-    document.getElementById('fSort').addEventListener('change', function() { applySort(this.value); });
-    document.getElementById('fSearch').addEventListener('input', renderTable);
-    document.getElementById('selectAllCb').addEventListener('change', function() { toggleSelectAll(this); });
+    // Initial balance input listener (if element exists)
+    const initBalEl = document.getElementById('initBal');
+    if (initBalEl) {
+      initBalEl.addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
+    }
+    const logoutBtnEl = document.getElementById('logoutBtn');
+    if (logoutBtnEl) logoutBtnEl.addEventListener('click', logout);
+    safeAddListener('loadBtn', 'click', loadFromStorage);
+    safeAddListener('backupBtn', 'click', saveJSONBackup);
+    safeAddListener('resetBtn', 'click', resetAll);
+    safeAddListener('parseBtn', 'click', parseLog);
+    safeAddListener('addManualBtn', 'click', openAddModal);
+    safeAddListener('clearLogBtn', 'click', function() { const el = document.getElementById('logInput'); if (el) el.value = ''; });
+    safeAddListener('dlBtn', 'click', autoDownloadExcel);
+    safeAddListener('csvBtn', 'click', exportCSV);
+    safeAddListener('pdfBtn', 'click', exportPDF);
+    safeAddListener('fPlayer', 'change', renderTable);
+    safeAddListener('fReason', 'change', renderTable);
+    safeAddListener('fTag', 'change', renderTable);
+    safeAddListener('fCurrency', 'change', renderTable);
+    safeAddListener('fDateFrom', 'change', renderTable);
+    safeAddListener('fDateTo', 'change', renderTable);
+    safeAddListener('fSort', 'change', function() { applySort(this.value); });
+    safeAddListener('fSearch', 'input', renderTable);
+    safeAddListener('selectAllCb', 'change', function() { toggleSelectAll(this); });
 
     // Syphon event listeners
-    document.getElementById('syphonParseBtn').addEventListener('click', parseSyphonLog);
-    document.getElementById('syphonAddManualBtn').addEventListener('click', openSyphonAddModal);
-    document.getElementById('syphonClearLogBtn').addEventListener('click', function() { document.getElementById('syphonLogInput').value = ''; });
-    document.getElementById('syphonFPlayer').addEventListener('change', renderSyphonTable);
-    document.getElementById('syphonFReason').addEventListener('change', renderSyphonTable);
-    document.getElementById('syphonFDateFrom').addEventListener('change', renderSyphonTable);
-    document.getElementById('syphonFDateTo').addEventListener('change', renderSyphonTable);
-    document.getElementById('syphonFSort').addEventListener('change', function() { applySyphonSort(this.value); });
-    document.getElementById('syphonFSearch').addEventListener('input', renderSyphonTable);
-    document.getElementById('syphonSelectAllCb').addEventListener('change', function() { syphonToggleSelectAll(this); });
+    safeAddListener('syphonParseBtn', 'click', parseSyphonLog);
+    safeAddListener('syphonAddManualBtn', 'click', openSyphonAddModal);
+    safeAddListener('syphonClearLogBtn', 'click', function() { const el = document.getElementById('syphonLogInput'); if (el) el.value = ''; });
+    safeAddListener('syphonFPlayer', 'change', renderSyphonTable);
+    safeAddListener('syphonFReason', 'change', renderSyphonTable);
+    safeAddListener('syphonFDateFrom', 'change', renderSyphonTable);
+    safeAddListener('syphonFDateTo', 'change', renderSyphonTable);
+    safeAddListener('syphonFSort', 'change', function() { applySyphonSort(this.value); });
+    safeAddListener('syphonFSearch', 'input', renderSyphonTable);
+    safeAddListener('syphonSelectAllCb', 'change', function() { syphonToggleSelectAll(this); });
 
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
       btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
