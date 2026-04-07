@@ -267,6 +267,28 @@
     window.location.href = './login.html';
   }
 
+  function toggleSyphonMode() {
+    const treasuryTabs = document.getElementById('treasuryTabs');
+    const syphonTabs = document.getElementById('syphonTabs');
+    const syphonBtn = document.getElementById('syphonBtn');
+    
+    const isShowingSyphon = syphonTabs.style.display !== 'none';
+    
+    if (isShowingSyphon) {
+      // Switch to Treasury
+      treasuryTabs.style.display = 'block';
+      syphonTabs.style.display = 'none';
+      syphonBtn.textContent = '🔮 Syphon';
+      localStorage.setItem('syphonModeActive', '0');
+    } else {
+      // Switch to Syphon
+      treasuryTabs.style.display = 'none';
+      syphonTabs.style.display = 'block';
+      syphonBtn.textContent = '📊 Treasury';
+      localStorage.setItem('syphonModeActive', '1');
+    }
+  }
+
   // ==================== STORAGE (Hybrid) ====================
   /**
    * Save data to localStorage or IndexedDB (debounced 300ms)
@@ -2362,6 +2384,11 @@ window.onload = async function () {
       document.body.classList.add('dark');
       document.getElementById('darkBtn').textContent = '☀️';
     }
+    // Restore syphon mode state
+    const syphonModeState = localStorage.getItem('syphonModeActive');
+    if (syphonModeState === '1') {
+      setTimeout(() => toggleSyphonMode(), 100);
+    }
     updateStorageBadge();
     document.getElementById('initBal').addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
     document.getElementById('logoutBtn').addEventListener('click', logout);
@@ -2520,6 +2547,7 @@ function showUpdateBanner() {
   window.renderPeriod = renderPeriod;
   window.saveToStorage = saveToStorage;
   window.toggleDarkMode = toggleDarkMode;
+  window.toggleSyphonMode = toggleSyphonMode;
   window.logout = logout;
   window.loadFromStorage = loadFromStorage;
   window.saveJSONBackup = saveJSONBackup;

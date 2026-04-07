@@ -30,8 +30,7 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
         <div class="guild-sub">Balance Tracker &amp; Transaction Log</div>
       </div>
       <div class="balance-area">
-        <span class="balance-label">Initial Balance:</span>
-        <input class="balance-input" id="initBal" type="number" value="0" placeholder="0">
+        <button onclick="toggleSyphonMode()" id="syphonBtn" style="font-size:13px;padding:8px 12px;background:#8b5cf6;color:#fff;border:none;border-radius:8px;cursor:pointer">🔮 Syphon</button>
       </div>
     </div>
     <div class="stats-row">
@@ -118,16 +117,16 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
       </div>
     </div>
 
-    <!-- TAB ROW -->
-    <div class="tab-row">
-      <button class="tab-btn active" data-tab="0">📋 Log Transaksi</button>
-      <button class="tab-btn" data-tab="1">📅 Rekap Mingguan &amp; Harian</button>
-      <button class="tab-btn" data-tab="2">📅 Rekap per Tanggal 1 (Bulanan)</button>
-      <button class="tab-btn" data-tab="3">📊 Grafik Trend</button>
-      <button class="tab-btn" data-tab="4">🔮 Syphon Tracker</button>
-    </div>
+    <!-- TREASURY TABS -->
+    <div id="treasuryTabs">
+      <div class="tab-row">
+        <button class="tab-btn active" data-tab="0">📋 Log Transaksi</button>
+        <button class="tab-btn" data-tab="1">📅 Rekap Mingguan &amp; Harian</button>
+        <button class="tab-btn" data-tab="2">📅 Rekap per Tanggal 1 (Bulanan)</button>
+        <button class="tab-btn" data-tab="3">📊 Grafik Trend</button>
+      </div>
 
-    <!-- TAB 0: LOG -->
+      <!-- TAB 0: LOG -->
     <div class="tab-panel active" id="tab-0">
       <div class="bulk-bar" id="bulkBar">
         <span class="bulk-count" id="bulkCountBar">0 dipilih</span>
@@ -217,9 +216,12 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
         <div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
       </div>
     </div>
+    </div>
 
-    <!-- TAB 4: SYPHON TRACKER -->
-    <div class="tab-panel" id="tab-4">
+    <!-- SYPHON MODE -->
+    <div id="syphonTabs" style="display:none">
+      <!-- TAB 4: SYPHON TRACKER -->
+      <div class="tab-panel active" id="tab-4">
       <!-- SYPHON PASTE LOG SECTION -->
       <div class="section-card" style="margin-bottom:12px">
         <div class="section-header">
@@ -318,6 +320,7 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
           <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
         </div>
       </div>
+    </div>
     </div>
   </div>
 </div>
