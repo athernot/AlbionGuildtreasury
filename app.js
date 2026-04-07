@@ -39,6 +39,24 @@
   let statsCache = null;
   let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
 
+  // ==================== SYPHON TRACKER GLOBAL VARIABLES ====================
+  let syphonRows = [];
+  let syphonLastDeleted = null;
+  let syphonLastBulkDeleted = null;
+  let syphonEditingId = null;
+  const SYPHON_STORAGE_KEY = 'albionSyphonTreasuryV80';
+  let syphonCurrentSort = { col: 1, dir: 'desc' };
+  let syphonSelectedIds = new Set();
+  let syphonCurrentPage = 1;
+  let syphonRowsPerPage = 50;
+  let syphonExistingKeysCache = new Set();
+  let syphonDirtyIds = { added: new Set(), deleted: new Set() };
+  let syphonLastDuplicates = [];
+  let syphonBalMapCache = null;
+  let syphonStatsCache = null;
+  let syphonFilterCache = { players: null, reasons: null, version: -1 };
+  let syphonSortedRowsCache = null;
+
   function logAudit(action, details) {
   auditLog.push({ timestamp: new Date().toISOString(), action: action, details: details });
   if (auditLog.length > 500) auditLog = auditLog.slice(-500);
@@ -353,6 +371,51 @@ function updateStorageBadge() {
   }
 }
 
+// ==================== SYPHON STORAGE FUNCTIONS ====================
+async function saveSyphonToStorage() {
+  if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+  return new Promise((resolve, reject) => {
+    saveDebounceTimer = setTimeout(async () => {
+      try {
+        const data = { version: APP_VERSION, timestamp: Date.now(), rows: syphonRows };
+        localStorage.setItem(SYPHON_STORAGE_KEY, JSON.stringify(data));
+        lastSavedTime = Date.now();
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    }, 300);
+  });
+}
+
+function loadSyphonFromStorage() {
+  const saved = localStorage.getItem(SYPHON_STORAGE_KEY);
+  if (!saved) return;
+  let data;
+  try { data = JSON.parse(saved); } catch(e) { return; }
+  syphonRows = (data.rows || []).map(function(r) {
+    if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
+    if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
+    return r;
+  });
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  syphonExistingKeysCache = new Set(syphonRows.map(rowKey));
+  syphonDirtyIds.added.clear();
+  syphonDirtyIds.deleted.clear();
+}
+
+function saveSyphonJSONBackup() {
+  if (syphonRows.length === 0) return alert('Tidak ada data syphon untuk di-backup.');
+  const data = { version: APP_VERSION, timestamp: Date.now(), rows: syphonRows };
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `syphon_tracker_backup_${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
 // ==================== FILE UPLOAD & PARSE LOG ====================
   // Handle file upload (Excel .xlsx or JSON backup)
   function handleFileSelect(e) {
@@ -546,6 +609,61 @@ function mergeDuplicates() {
   setTimeout(() => { document.getElementById('okNotice').className = ''; }, 4000);
 }
 
+// ==================== SYPHON PARSE LOG ====================
+function parseSyphonLog() {
+  const raw = document.getElementById('syphonLogInput').value.trim();
+  if (!raw) return;
+  showLoading('Parsing syphon log...');
+  setTimeout(() => {
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    if (syphonExistingKeysCache.size === 0 || syphonExistingKeysCache.size !== syphonRows.length) {
+      syphonExistingKeysCache = new Set(syphonRows.map(rowKey));
+    }
+    const added = [], duplicates = [];
+    for (const line of lines) {
+      if (/^\s*"?date\s+"?player\s+"?reason\s+"?amount/i.test(line)) continue;
+      const matches = line.match(/"([^"]*)"/g);
+      if (!matches || matches.length < 4) continue;
+      const values = matches.map(m => m.slice(1, -1));
+      const amt = parseFloat(values[3]);
+      if (isNaN(amt) || !isFinite(amt)) continue;
+      const entry = { date: values[0], player: values[1], reason: values[2], amount: amt, id: generateId(), playerLc: values[1].toLowerCase(), reasonLc: values[2].toLowerCase() };
+      if (!isValidDate(entry.date)) continue;
+      const key = rowKey(entry);
+      if (syphonExistingKeysCache.has(key)) {
+        duplicates.push(entry);
+      } else {
+        syphonRows.push(entry);
+        syphonExistingKeysCache.add(key);
+        syphonDirtyIds.added.add(entry.id);
+        added.push(entry);
+      }
+    }
+    hideLoading();
+    showSyphonNotices(added.length, duplicates);
+    syphonBalMapCache = null;
+    syphonSortedRowsCache = null;
+    syphonStatsCache = null;
+    saveSyphonToStorage();
+    refreshSyphon();
+  }, 50);
+}
+
+function showSyphonNotices(addedCount, duplicates) {
+  syphonLastDuplicates = duplicates;
+  if (duplicates.length > 0) {
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = `⚠️ ${duplicates.length} duplikat dilewati. ${addedCount} syphon baru ditambahkan.`;
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 4000);
+  } else if (addedCount > 0) {
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = `✅ ${addedCount} syphon berhasil ditambahkan.`;
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 3000);
+  }
+}
+
 // ==================== STATS & BALANCE MAP ====================
   // Unified function: compute stats + balance map in one traversal
   function computeStatsAndBalMap() {
@@ -633,6 +751,66 @@ function mergeDuplicates() {
   }
   computeStatsAndBalMap();
   return balMapCache;
+}
+
+// ==================== SYPHON STATS & BALANCE ====================
+function computeSyphonStatsAndBalMap() {
+  const sorted = syphonSortedRowsCache && syphonSortedRowsCache.length === syphonRows.length
+    ? syphonSortedRowsCache
+    : [...syphonRows].sort((a, b) => a.date.localeCompare(b.date));
+
+  let dep = 0, wit = 0, net = 0;
+  let latestTime = 0;
+  let run = 0;
+  const map = {};
+
+  sorted.forEach(r => {
+    if (r.amount > 0) dep += r.amount; else wit += r.amount;
+    const t = new Date(r.date.replace(' ', 'T')).getTime();
+    if (t > latestTime) latestTime = t;
+    run += r.amount;
+    map[rowKey(r)] = run;
+  });
+
+  net = dep + wit;
+  syphonStatsCache = { dep, wit, net, latestTime, rowCount: syphonRows.length };
+  syphonBalMapCache = map;
+  syphonSortedRowsCache = sorted;
+  return { map, stats: syphonStatsCache };
+}
+
+function recalcSyphon() {
+  if (!syphonStatsCache || syphonStatsCache.rowCount !== syphonRows.length || syphonBalMapCache === null) {
+    computeSyphonStatsAndBalMap();
+  }
+  const s = syphonStatsCache;
+
+  if (!s.latestTime) {
+    document.getElementById('syphon-st-bal').textContent = '0';
+    document.getElementById('syphon-st-dep').textContent = '0';
+    document.getElementById('syphon-st-wit').textContent = '0';
+    document.getElementById('syphon-st-cnt').textContent = '0';
+    document.getElementById('syphon-st-net').textContent = '0';
+    document.getElementById('syphon-st-net').className = 'stat-value amber';
+    return;
+  }
+
+  const net = s.dep + s.wit;
+  document.getElementById('syphon-st-bal').textContent = fmt(net);
+  document.getElementById('syphon-st-dep').textContent = fmt(s.dep);
+  document.getElementById('syphon-st-wit').textContent = fmt(s.wit);
+  document.getElementById('syphon-st-cnt').textContent = syphonRows.length;
+  const netEl = document.getElementById('syphon-st-net');
+  netEl.textContent = (net >= 0 ? '+' : '') + fmt(net);
+  netEl.className = 'stat-value ' + (net > 0 ? 'green' : net < 0 ? 'red' : 'amber');
+}
+
+function buildSyphonBalMap() {
+  if (syphonBalMapCache && syphonStatsCache && syphonStatsCache.rowCount === syphonRows.length) {
+    return syphonBalMapCache;
+  }
+  computeSyphonStatsAndBalMap();
+  return syphonBalMapCache;
 }
 
 // ==================== FILTERS & TABLE (FILTER TANGGAL SUDAH DIFIX) ====================
@@ -757,6 +935,159 @@ function mergeDuplicates() {
    renderPagination(total, totalPages, start);
    updateBulkBar();
  }
+
+// ==================== SYPHON FILTERS & TABLE ====================
+function updateSyphonFilters() {
+  const version = syphonRows.length;
+  if (syphonFilterCache.version !== version) {
+    syphonFilterCache.players = [...new Set(syphonRows.map(r => r.player))].sort();
+    syphonFilterCache.reasons = [...new Set(syphonRows.map(r => r.reason))].sort();
+    syphonFilterCache.version = version;
+  }
+  const fp = document.getElementById('syphonFPlayer'), fr = document.getElementById('syphonFReason');
+  const pv = fp.value, rv = fr.value;
+  fp.innerHTML = '<option value="">All</option>' + syphonFilterCache.players.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+  fr.innerHTML = '<option value="">All</option>' + syphonFilterCache.reasons.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+  fp.value = pv; fr.value = rv;
+}
+
+function getSyphonFilteredRows() {
+  const fp = document.getElementById('syphonFPlayer').value;
+  const fr = document.getElementById('syphonFReason').value;
+  const fromVal = document.getElementById('syphonFDateFrom').value;
+  const toVal = document.getElementById('syphonFDateTo').value;
+  const sq = document.getElementById('syphonFSearch').value.toLowerCase();
+
+  const fromTime = fromVal ? new Date(fromVal.replace('T', ' ') + ':00').getTime() : 0;
+  const toTime = toVal ? new Date(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59').getTime() : 0;
+
+  const data = [];
+  for (let i = 0; i < syphonRows.length; i++) {
+    const r = syphonRows[i];
+    if (fp && r.player !== fp) continue;
+    if (fr && r.reason !== fr) continue;
+    if (fromTime && getTimestamp(r.date) < fromTime) continue;
+    if (toTime && getTimestamp(r.date) > toTime) continue;
+    if (sq) {
+      const playerMatch = r.playerLc || r.player.toLowerCase();
+      const reasonMatch = r.reasonLc || r.reason.toLowerCase();
+      if (!playerMatch.includes(sq) && !reasonMatch.includes(sq) && !r.date.includes(sq)) continue;
+    }
+    data.push(r);
+  }
+  return data;
+}
+
+function renderSyphonTable() {
+  if (!syphonBalMapCache) syphonBalMapCache = buildSyphonBalMap();
+  let data = getSyphonFilteredRows();
+
+  const rowIndexMap = new Map();
+  syphonRows.forEach((row, index) => {
+    rowIndexMap.set(row.id, index);
+  });
+
+  data.sort((a, b) => {
+    let va, vb;
+    switch (syphonCurrentSort.col) {
+      case 1: va = a.date; vb = b.date; break;
+      case 2: va = a.player; vb = b.player; break;
+      case 3: va = a.reason; vb = b.reason; break;
+      case 4: va = a.amount; vb = b.amount; break;
+      case 5: va = syphonBalMapCache[rowKey(a)]; vb = syphonBalMapCache[rowKey(b)]; break;
+      default: va = a.date; vb = b.date;
+    }
+    if (typeof va === 'number' && typeof vb === 'number') {
+      return syphonCurrentSort.dir === 'asc' ? va - vb : vb - va;
+    }
+    return syphonCurrentSort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+
+  const total = data.length;
+  const totalPages = Math.max(1, Math.ceil(total / syphonRowsPerPage));
+  if (syphonCurrentPage > totalPages) syphonCurrentPage = totalPages;
+  const start = (syphonCurrentPage - 1) * syphonRowsPerPage;
+  const pageData = data.slice(start, start + syphonRowsPerPage);
+
+  document.getElementById('syphon-tbl-badge').textContent = syphonRows.length + ' rows';
+  const tbody = document.getElementById('syphonTblBody');
+  if (!total) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">Tidak ada data yang cocok</td></tr>';
+    document.getElementById('syphonPagination').className = 'pagination hidden';
+    return;
+  }
+  tbody.innerHTML = pageData.map((r, i) => {
+    const bal = syphonBalMapCache[rowKey(r)] ?? '';
+    const checked = syphonSelectedIds.has(r.id) ? 'checked' : '';
+    const globalIdx = (rowIndexMap.get(r.id) !== undefined ? rowIndexMap.get(r.id) + 1 : start + i + 1);
+    return '<tr>' +
+      '<td class="cb-cell"><input type="checkbox" ' + checked + ' onchange="toggleSyphonSelect(\'' + r.id + '\', this)"></td>' +
+      '<td style="color:#aaa;font-size:11px">' + globalIdx + '</td>' +
+      '<td style="font-size:12px">' + escHtml(r.date) + '</td>' +
+      '<td style="font-weight:600">' + escHtml(r.player) + '</td>' +
+      '<td><span class="pill pill-oth">' + escHtml(r.reason) + '</span></td>' +
+      '<td class="' + (r.amount>=0?'amount-pos':'amount-neg') + '">' + fmt(r.amount) + '</td>' +
+      '<td style="font-weight:600;font-size:12px">' + fmt(bal) + '</td>' +
+      '<td class="action-btns">' +
+        '<span onclick="editSyphonTransaction(\'' + r.id + '\')" title="Edit">✏️</span>' +
+        '<span onclick="deleteSyphonTransaction(\'' + r.id + '\')" title="Delete">🗑️</span>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+  renderSyphonPagination(total, totalPages, start);
+  updateSyphonBulkBar();
+}
+
+function renderSyphonPagination(total, totalPages, start) {
+  const container = document.getElementById('syphonPagination');
+  if (totalPages <= 1) {
+    container.className = 'pagination hidden';
+    return;
+  }
+  container.className = 'pagination';
+  const from = start + 1;
+  const to = Math.min(start + syphonRowsPerPage, total);
+  var html = '<span class="page-info">' + from + '-' + to + ' dari ' + total + ' syphon</span>';
+  html += '<div class="page-btns">';
+  html += '<button onclick="syphonGoPage(' + (syphonCurrentPage - 1) + ')" ' + (syphonCurrentPage <= 1 ? 'disabled' : '') + '>‹</button>';
+  var maxVisible = 7;
+  var startPage = Math.max(1, syphonCurrentPage - Math.floor(maxVisible / 2));
+  var endPage = Math.min(totalPages, startPage + maxVisible - 1);
+  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+  if (startPage > 1) {
+    html += '<button onclick="syphonGoPage(1)">1</button>';
+    if (startPage > 2) html += '<span style="padding:0 4px;color:#94a3b8">…</span>';
+  }
+  for (var p = startPage; p <= endPage; p++) {
+    html += '<button onclick="syphonGoPage(' + p + ')" class="' + (p === syphonCurrentPage ? 'active' : '') + '">' + p + '</button>';
+  }
+  if (endPage < totalPages) {
+    if (endPage < totalPages - 1) html += '<span style="padding:0 4px;color:#94a3b8">…</span>';
+    html += '<button onclick="syphonGoPage(' + totalPages + ')">' + totalPages + '</button>';
+  }
+  html += '<button onclick="syphonGoPage(' + (syphonCurrentPage + 1) + ')" ' + (syphonCurrentPage >= totalPages ? 'disabled' : '') + '>›</button>';
+  html += '<select onchange="changeSyphonRPP(this.value)" style="margin-left:8px">';
+  [25, 50, 100, 250, 500].forEach(function(n) {
+    html += '<option value="' + n + '" ' + (n === syphonRowsPerPage ? 'selected' : '') + '>' + n + '/hal</option>';
+  });
+  html += '</select></div>';
+  container.innerHTML = html;
+}
+
+function syphonGoPage(p) {
+  var data = getSyphonFilteredRows();
+  var totalPages = Math.max(1, Math.ceil(data.length / syphonRowsPerPage));
+  if (p < 1 || p > totalPages) return;
+  syphonCurrentPage = p;
+  renderSyphonTable();
+  document.querySelector('.tbl-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function changeSyphonRPP(n) {
+  syphonRowsPerPage = parseInt(n);
+  syphonCurrentPage = 1;
+  renderSyphonTable();
+}
 
 function renderPagination(total, totalPages, start) {
   const container = document.getElementById('pagination');
@@ -1026,6 +1357,237 @@ function quickEditTag(id) {
   refreshAll();
 }
 
+// ==================== SYPHON CRUD ====================
+function deleteSyphonTransaction(id) {
+  if (!confirm('🗑️ Hapus syphon ini secara permanen?')) return;
+  const tx = syphonRows.find(r => r.id === id);
+  if (!tx) return;
+  const index = syphonRows.indexOf(tx);
+  syphonLastDeleted = { ...tx, _originalIndex: index };
+  syphonExistingKeysCache.delete(rowKey(tx));
+  syphonDirtyIds.deleted.add(tx.id);
+  syphonRows = syphonRows.filter(r => r.id !== id);
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  saveSyphonToStorage();
+  refreshSyphon();
+  showSyphonUndoToast();
+}
+
+function showSyphonUndoToast() {
+  const toast = document.getElementById('dlToast');
+  document.getElementById('dlToastText').innerHTML = `Syphon dihapus. <strong>Undo?</strong>`;
+  toast.style.display = 'flex';
+  toast.classList.add('show');
+  setTimeout(() => hideToast('dlToast'), 5000);
+}
+
+function editSyphonTransaction(id) {
+  const tx = syphonRows.find(r => r.id === id);
+  if (!tx) return;
+  syphonEditingId = id;
+  document.getElementById('syphonEditDate').value = tx.date.replace(' ', 'T').substring(0, 16);
+  document.getElementById('syphonEditPlayer').value = tx.player;
+  document.getElementById('syphonEditReason').value = tx.reason;
+  document.getElementById('syphonEditAmount').value = tx.amount;
+  document.getElementById('syphonEditModal').style.display = 'flex';
+}
+
+function saveSyphonEdit() {
+  if (!syphonEditingId) return;
+  const tx = syphonRows.find(r => r.id === syphonEditingId);
+  if (!tx) return;
+  const newDate = document.getElementById('syphonEditDate').value.trim().replace('T', ' ');
+  const newPlayer = document.getElementById('syphonEditPlayer').value.trim();
+  const newReason = document.getElementById('syphonEditReason').value.trim();
+  const newAmount = document.getElementById('syphonEditAmount').value;
+  const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
+  if (!newDate) return showSyphonEditError('Tanggal tidak boleh kosong!');
+  if (!newPlayer) return showSyphonEditError('Player name tidak boleh kosong!');
+  if (!newReason) return showSyphonEditError('Reason tidak boleh kosong!');
+  if (!isValidDate(dateStr)) return showSyphonEditError('Format tanggal tidak valid!');
+  if (newAmount === '' || newAmount === null || newAmount === undefined) return showSyphonEditError('Amount tidak boleh kosong!');
+  const amountNum = parseFloat(newAmount);
+  if (isNaN(amountNum)) return showSyphonEditError('Amount harus berupa angka!');
+  if (!isFinite(amountNum)) return showSyphonEditError('Amount tidak valid (Infinity)!');
+  if (Math.abs(amountNum) > 9e15) return showSyphonEditError('Amount terlalu besar!');
+  tx.date = dateStr;
+  tx.player = newPlayer;
+  tx.reason = newReason;
+  tx.amount = amountNum;
+  tx.playerLc = newPlayer.toLowerCase();
+  tx.reasonLc = newReason.toLowerCase();
+  closeSyphonModal();
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  saveSyphonToStorage();
+  refreshSyphon();
+}
+
+function showSyphonEditError(msg) {
+  const errEl = document.getElementById('syphonEditError');
+  errEl.textContent = '❌ ' + msg;
+  errEl.style.display = 'block';
+  setTimeout(() => { errEl.style.display = 'none'; }, 4000);
+}
+
+function closeSyphonModal() {
+  document.getElementById('syphonEditModal').style.display = 'none';
+  const errEl = document.getElementById('syphonEditError');
+  if (errEl) errEl.style.display = 'none';
+  syphonEditingId = null;
+}
+
+function openSyphonAddModal() {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  document.getElementById('syphonAddDate').value = local;
+  document.getElementById('syphonAddPlayer').value = '';
+  document.getElementById('syphonAddReason').value = '';
+  document.getElementById('syphonAddAmount').value = '';
+  document.getElementById('syphonAddError').style.display = 'none';
+  document.getElementById('syphonAddModal').style.display = 'flex';
+}
+
+function closeSyphonAddModal() {
+  document.getElementById('syphonAddModal').style.display = 'none';
+  document.getElementById('syphonAddError').style.display = 'none';
+}
+
+function showSyphonAddError(msg) {
+  const errEl = document.getElementById('syphonAddError');
+  errEl.textContent = '❌ ' + msg;
+  errEl.style.display = 'block';
+  setTimeout(() => { errEl.style.display = 'none'; }, 4000);
+}
+
+function saveSyphonAdd() {
+  const newDate = document.getElementById('syphonAddDate').value.trim().replace('T', ' ');
+  const newPlayer = document.getElementById('syphonAddPlayer').value.trim();
+  const newReason = document.getElementById('syphonAddReason').value.trim();
+  const newAmount = document.getElementById('syphonAddAmount').value;
+  const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
+  if (!newDate) return showSyphonAddError('Tanggal tidak boleh kosong!');
+  if (!newPlayer) return showSyphonAddError('Player name tidak boleh kosong!');
+  if (!newReason) return showSyphonAddError('Reason tidak boleh kosong!');
+  if (!isValidDate(dateStr)) return showSyphonAddError('Format tanggal tidak valid!');
+  if (newAmount === '' || newAmount === null || newAmount === undefined) return showSyphonAddError('Amount tidak boleh kosong!');
+  const amountNum = parseFloat(newAmount);
+  if (isNaN(amountNum)) return showSyphonAddError('Amount harus berupa angka!');
+  if (!isFinite(amountNum)) return showSyphonAddError('Amount tidak valid (Infinity)!');
+  if (Math.abs(amountNum) > 9e15) return showSyphonAddError('Amount terlalu besar!');
+  const entry = { date: dateStr, player: newPlayer, reason: newReason, amount: amountNum, id: generateId(), playerLc: newPlayer.toLowerCase(), reasonLc: newReason.toLowerCase() };
+  syphonRows.push(entry);
+  syphonExistingKeysCache.add(rowKey(entry));
+  syphonDirtyIds.added.add(entry.id);
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  closeSyphonAddModal();
+  saveSyphonToStorage();
+  refreshSyphon();
+  const toast = document.getElementById('dlToast');
+  document.getElementById('dlToastText').textContent = '✅ 1 syphon ditambahkan.';
+  toast.classList.add('show');
+  setTimeout(() => hideToast('dlToast'), 3000);
+}
+
+// ==================== SYPHON BULK OPERATIONS ====================
+function toggleSyphonSelect(id, checkbox) {
+  if (checkbox.checked) {
+    syphonSelectedIds.add(id);
+  } else {
+    syphonSelectedIds.delete(id);
+  }
+  updateSyphonBulkBar();
+}
+
+function syphonToggleSelectAll(checkbox) {
+  const data = getSyphonFilteredRows();
+  if (checkbox.checked) {
+    data.forEach(r => syphonSelectedIds.add(r.id));
+  } else {
+    data.forEach(r => syphonSelectedIds.delete(r.id));
+  }
+  updateSyphonBulkBar();
+  renderSyphonTable();
+}
+
+function syphonSelectAllVisible() {
+  const data = getSyphonFilteredRows();
+  data.forEach(r => syphonSelectedIds.add(r.id));
+  updateSyphonBulkBar();
+  renderSyphonTable();
+}
+
+function syphonClearSelection() {
+  syphonSelectedIds.clear();
+  updateSyphonBulkBar();
+  renderSyphonTable();
+}
+
+function updateSyphonBulkBar() {
+  const bulk = document.getElementById('syphonBulkBar');
+  if (syphonSelectedIds.size === 0) {
+    bulk.classList.remove('visible');
+  } else {
+    bulk.classList.add('visible');
+    document.getElementById('syphonBulkCountBar').textContent = syphonSelectedIds.size + ' dipilih';
+  }
+  document.getElementById('syphonSelectAllCb').checked = false;
+}
+
+function openSyphonBulkModal() {
+  if (syphonSelectedIds.size === 0) return;
+  document.getElementById('syphonBulkCount').textContent = syphonSelectedIds.size;
+  document.getElementById('syphonBulkModal').style.display = 'flex';
+}
+
+function closeSyphonBulkModal() {
+  document.getElementById('syphonBulkModal').style.display = 'none';
+}
+
+function confirmSyphonBulkDelete() {
+  if (syphonSelectedIds.size === 0) return closeSyphonBulkModal();
+  const toDelete = Array.from(syphonSelectedIds);
+  syphonLastBulkDeleted = syphonRows.filter(r => toDelete.includes(r.id));
+  syphonRows = syphonRows.filter(r => !toDelete.includes(r.id));
+  toDelete.forEach(id => {
+    syphonExistingKeysCache.delete(id);
+    syphonDirtyIds.deleted.add(id);
+  });
+  syphonSelectedIds.clear();
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  saveSyphonToStorage();
+  refreshSyphon();
+  closeSyphonBulkModal();
+  const toast = document.getElementById('dlToast');
+  document.getElementById('dlToastText').textContent = `✅ ${toDelete.length} syphon dihapus.`;
+  toast.classList.add('show');
+  setTimeout(() => hideToast('dlToast'), 3000);
+}
+
+function syphonSortTable(col) {
+  if (syphonCurrentSort.col === col) {
+    syphonCurrentSort.dir = syphonCurrentSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    syphonCurrentSort.col = col;
+    syphonCurrentSort.dir = col === 1 ? 'desc' : 'asc';
+  }
+  syphonCurrentPage = 1;
+  renderSyphonTable();
+}
+
+function applySyphonSort(dir) {
+  syphonCurrentSort.dir = dir;
+  syphonCurrentPage = 1;
+  renderSyphonTable();
+}
+
 // ==================== PERIOD & MONTHLY ====================
   // Build weekly/daily period aggregation data
   function buildPeriodData() {
@@ -1130,6 +1692,106 @@ function renderMonthly() {
       </div>
       <hr class="month-divider">
       <div class="month-row"><span class="month-row-label" style="font-weight:600">Saldo Akhir</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ==================== SYPHON SUMMARY & PERIOD ====================
+function buildSyphonPlayerSummary() {
+  const grouped = {};
+  syphonRows.forEach(r => {
+    if (!grouped[r.player]) {
+      grouped[r.player] = { player: r.player, deposits: 0, withdrawals: 0, count: 0 };
+    }
+    if (r.amount > 0) {
+      grouped[r.player].deposits += r.amount;
+    } else {
+      grouped[r.player].withdrawals += Math.abs(r.amount);
+    }
+    grouped[r.player].count++;
+  });
+  return grouped;
+}
+
+function renderSyphonPlayerSummary() {
+  const grouped = buildSyphonPlayerSummary();
+  const players = Object.keys(grouped).sort();
+  const container = document.getElementById('syphonPlayerSummaryGrid');
+  if (!players.length) {
+    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
+    return;
+  }
+  container.innerHTML = players.map(p => {
+    const player = grouped[p];
+    const diff = player.deposits - player.withdrawals;
+    const diffCls = diff >= 0 ? 'green' : 'red';
+    return `<div class="month-card">
+      <div class="month-label">👤 ${escHtml(player.player)}</div>
+      <div class="month-rows">
+        <div class="month-row"><span class="month-row-label">Total Deposit</span><span class="month-row-val green">+${fmt(player.deposits)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Withdrawal</span><span class="month-row-val red">-${fmt(player.withdrawals)}</span></div>
+        <div class="month-row"><span class="month-row-label">Jumlah Transaksi</span><span class="month-row-val">${player.count}</span></div>
+      </div>
+      <hr class="month-divider">
+      <div class="month-row"><span class="month-row-label" style="font-weight:600">Selisih</span><span class="month-row-val ${diffCls}">${diff >= 0 ? '+' : ''}${fmt(diff)}</span></div>
+    </div>`;
+  }).join('');
+}
+
+function buildSyphonPeriodData() {
+  const grouped = {};
+  const sorted = syphonSortedRowsCache && syphonSortedRowsCache.length === syphonRows.length
+    ? [...syphonSortedRowsCache].reverse()
+    : [...syphonRows].sort((a,b) => b.date.localeCompare(a.date));
+  sorted.forEach(r => {
+    const ymd = r.date.substring(0,10);
+    const ym = r.date.substring(0,7);
+    const week = getWeekOfMonth(r.date);
+    const weekKey = ym + '-W' + week;
+    if (!grouped[weekKey]) grouped[weekKey] = { ym, week, net:0, dep:0, wit:0, days:{} };
+    if (!grouped[weekKey].days[ymd]) grouped[weekKey].days[ymd] = { net:0, dep:0, wit:0 };
+    grouped[weekKey].net += r.amount;
+    grouped[weekKey].days[ymd].net += r.amount;
+    if (r.amount > 0) {
+      grouped[weekKey].dep += r.amount;
+      grouped[weekKey].days[ymd].dep += r.amount;
+    } else {
+      grouped[weekKey].wit += r.amount;
+      grouped[weekKey].days[ymd].wit += r.amount;
+    }
+  });
+  return grouped;
+}
+
+function renderSyphonPeriod() {
+  const grouped = buildSyphonPeriodData();
+  const container = document.getElementById('syphonPeriodGrid');
+  const keys = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
+  if (!keys.length) {
+    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
+    return;
+  }
+  container.innerHTML = keys.map(k => {
+    const w = grouped[k];
+    const dayKeys = Object.keys(w.days).sort((a,b) => b.localeCompare(a));
+    const daysHtml = dayKeys.map(d => {
+      const dayData = w.days[d];
+      const netCls = dayData.net >= 0 ? 'green' : 'red';
+      return `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px dashed #eee;">
+          <span>📅 ${d}</span>
+          <span class="${netCls}" style="font-weight:600">${dayData.net >= 0 ? '+' : ''}${fmt(dayData.net)}</span>
+      </div>`;
+    }).join('');
+    const wNetCls = w.net >= 0 ? 'green' : 'red';
+    return `<div class="month-card">
+      <div class="month-label">Bulan ${w.ym} - Minggu ${w.week}</div>
+      <div class="month-rows" style="margin-bottom:8px">
+        <div class="month-row"><span class="month-row-label">Total Masuk</span><span class="month-row-val green">+${fmt(w.dep)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Keluar</span><span class="month-row-val red">${fmt(w.wit)}</span></div>
+        <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">Net Minggu Ini</span><span class="month-row-val ${wNetCls}" style="font-size:13px">${w.net >= 0 ? '+' : ''}${fmt(w.net)}</span></div>
+      </div>
+      <div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px;margin-top:8px">Rincian Harian:</div>
+      ${daysHtml}
     </div>`;
   }).join('');
 }
@@ -1550,8 +2212,12 @@ async function confirmReset() {
    existingKeysCache.clear();
    rows = [];
    selectedIds.clear();
+   syphonRows = [];
+   syphonSelectedIds.clear();
    document.getElementById('selectAllCb').checked = false;
+   document.getElementById('syphonSelectAllCb').checked = false;
    document.getElementById('logInput').value = '';
+   document.getElementById('syphonLogInput').value = '';
    document.getElementById('excelFile').value = '';
    document.getElementById('uploadZone').className = 'upload-zone';
    document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
@@ -1561,9 +2227,15 @@ async function confirmReset() {
    balMapCache = null;
    sortedRowsCache = null;
    statsCache = null;
+   syphonBalMapCache = null;
+   syphonSortedRowsCache = null;
+   syphonStatsCache = null;
    filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+   syphonFilterCache = { players: null, reasons: null, version: -1 };
    saveToStorage();
+   saveSyphonToStorage();
    refreshAll();
+   refreshSyphon();
   hideLoading();
   const toast = document.getElementById('dlToast');
   document.getElementById('dlToastText').textContent = '✅ Data direset. Backup telah diunduh.';
@@ -1618,6 +2290,18 @@ function hideLoading() {
 }
 
   // Refresh all UI components (filters, stats, tables, recaps)
+// ==================== REFRESH & INIT ====================
+function refreshSyphon() {
+  syphonBalMapCache = null;
+  syphonSortedRowsCache = null;
+  syphonStatsCache = null;
+  updateSyphonFilters();
+  recalcSyphon();
+  renderSyphonTable();
+  renderSyphonPlayerSummary();
+  renderSyphonPeriod();
+}
+
   function refreshAll() {
   balMapCache = null;
   sortedRowsCache = null;
@@ -1699,6 +2383,19 @@ window.onload = async function () {
     document.getElementById('fSort').addEventListener('change', function() { applySort(this.value); });
     document.getElementById('fSearch').addEventListener('input', renderTable);
     document.getElementById('selectAllCb').addEventListener('change', function() { toggleSelectAll(this); });
+
+    // Syphon event listeners
+    document.getElementById('syphonParseBtn').addEventListener('click', parseSyphonLog);
+    document.getElementById('syphonAddManualBtn').addEventListener('click', openSyphonAddModal);
+    document.getElementById('syphonClearLogBtn').addEventListener('click', function() { document.getElementById('syphonLogInput').value = ''; });
+    document.getElementById('syphonFPlayer').addEventListener('change', renderSyphonTable);
+    document.getElementById('syphonFReason').addEventListener('change', renderSyphonTable);
+    document.getElementById('syphonFDateFrom').addEventListener('change', renderSyphonTable);
+    document.getElementById('syphonFDateTo').addEventListener('change', renderSyphonTable);
+    document.getElementById('syphonFSort').addEventListener('change', function() { applySyphonSort(this.value); });
+    document.getElementById('syphonFSearch').addEventListener('input', renderSyphonTable);
+    document.getElementById('syphonSelectAllCb').addEventListener('change', function() { syphonToggleSelectAll(this); });
+
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
       btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
     });
@@ -1730,7 +2427,12 @@ window.onload = async function () {
         localStorage.removeItem(oldKey);
       }
     }
+    
+    // Load syphon data from storage
+    loadSyphonFromStorage();
+    
     refreshAll();
+    refreshSyphon();
     registerPWA();
   } catch(err) {
     console.error('App init error:', err);
@@ -1858,4 +2560,34 @@ function showUpdateBanner() {
   window.mergeDuplicates = mergeDuplicates;
   window.renderChart = renderChart;
   window.quickEditTag = quickEditTag;
+
+  // Syphon functions
+  window.parseSyphonLog = parseSyphonLog;
+  window.renderSyphonTable = renderSyphonTable;
+  window.renderSyphonPlayerSummary = renderSyphonPlayerSummary;
+  window.renderSyphonPeriod = renderSyphonPeriod;
+  window.refreshSyphon = refreshSyphon;
+  window.recalcSyphon = recalcSyphon;
+  window.saveSyphonToStorage = saveSyphonToStorage;
+  window.loadSyphonFromStorage = loadSyphonFromStorage;
+  window.saveSyphonJSONBackup = saveSyphonJSONBackup;
+  window.openSyphonAddModal = openSyphonAddModal;
+  window.closeSyphonAddModal = closeSyphonAddModal;
+  window.saveSyphonAdd = saveSyphonAdd;
+  window.editSyphonTransaction = editSyphonTransaction;
+  window.saveSyphonEdit = saveSyphonEdit;
+  window.closeSyphonModal = closeSyphonModal;
+  window.deleteSyphonTransaction = deleteSyphonTransaction;
+  window.toggleSyphonSelect = toggleSyphonSelect;
+  window.syphonToggleSelectAll = syphonToggleSelectAll;
+  window.syphonSelectAllVisible = syphonSelectAllVisible;
+  window.syphonClearSelection = syphonClearSelection;
+  window.updateSyphonBulkBar = updateSyphonBulkBar;
+  window.openSyphonBulkModal = openSyphonBulkModal;
+  window.closeSyphonBulkModal = closeSyphonBulkModal;
+  window.confirmSyphonBulkDelete = confirmSyphonBulkDelete;
+  window.syphonGoPage = syphonGoPage;
+  window.changeSyphonRPP = changeSyphonRPP;
+  window.syphonSortTable = syphonSortTable;
+  window.applySyphonSort = applySyphonSort;
 })();

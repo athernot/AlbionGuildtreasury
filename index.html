@@ -124,6 +124,7 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
       <button class="tab-btn" data-tab="1">📅 Rekap Mingguan &amp; Harian</button>
       <button class="tab-btn" data-tab="2">📅 Rekap per Tanggal 1 (Bulanan)</button>
       <button class="tab-btn" data-tab="3">📊 Grafik Trend</button>
+      <button class="tab-btn" data-tab="4">🔮 Syphon Tracker</button>
     </div>
 
     <!-- TAB 0: LOG -->
@@ -216,6 +217,108 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
         <div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
       </div>
     </div>
+
+    <!-- TAB 4: SYPHON TRACKER -->
+    <div class="tab-panel" id="tab-4">
+      <!-- SYPHON PASTE LOG SECTION -->
+      <div class="section-card" style="margin-bottom:12px">
+        <div class="section-header">
+          <span class="section-title">② Paste Log Syphon</span>
+          <span class="badge">Input</span>
+        </div>
+        <textarea id="syphonLogInput" placeholder='Paste syphon log here, format&#10;"Date" "Player" "Reason" "Amount"'></textarea>
+        <div class="hint">Format: "Date" "Player" "Reason" "Amount" — Duplikat otomatis dilewati.</div>
+        <div class="btn-row">
+          <button id="syphonParseBtn" class="btn-primary">⚡ Parse &amp; Load</button>
+          <button id="syphonAddManualBtn" class="btn-green">➕ Tambah Manual</button>
+          <button id="syphonClearLogBtn">Clear</button>
+        </div>
+      </div>
+
+      <!-- SYPHON STATS ROW -->
+      <div class="section-card" style="margin-bottom:12px">
+        <div class="stats-row" style="background:#transparent;border:none;padding:0">
+          <div class="stat"><div class="stat-label">Current Balance</div><div class="stat-value amber" id="syphon-st-bal">0</div></div>
+          <div class="stat"><div class="stat-label">Total Deposit</div><div class="stat-value green" id="syphon-st-dep">0</div></div>
+          <div class="stat"><div class="stat-label">Total Withdrawal</div><div class="stat-value red" id="syphon-st-wit">0</div></div>
+          <div class="stat"><div class="stat-label">Net Balance</div><div class="stat-value" id="syphon-st-net">0</div></div>
+          <div class="stat"><div class="stat-label">Transactions</div><div class="stat-value" id="syphon-st-cnt">0</div></div>
+        </div>
+      </div>
+
+      <!-- SYPHON TABLE SECTION -->
+      <div class="section-card" style="margin-bottom:12px">
+        <div class="section-header" style="margin-bottom:10px">
+          <span class="section-title">🔮 Syphon Log</span>
+          <span class="badge" id="syphon-tbl-badge">0 rows</span>
+        </div>
+
+        <div class="bulk-bar" id="syphonBulkBar">
+          <span class="bulk-count" id="syphonBulkCountBar">0 dipilih</span>
+          <button onclick="openSyphonBulkModal()" class="bulk-btn-del">🗑 Hapus Terpilih</button>
+          <button onclick="syphonSelectAllVisible()" class="bulk-btn-sel">✅ Pilih Semua</button>
+          <button onclick="syphonClearSelection()" class="bulk-btn-clear">✖ Batal</button>
+        </div>
+
+        <div class="filter-row">
+          <label>Player:</label>
+          <select id="syphonFPlayer" onchange="renderSyphonTable()"><option value="">All</option></select>
+          <label>Reason:</label>
+          <select id="syphonFReason" onchange="renderSyphonTable()"><option value="">All</option></select>
+          <label>Dari:</label>
+          <input type="datetime-local" id="syphonFDateFrom" onchange="renderSyphonTable()">
+          <label>Sampai:</label>
+          <input type="datetime-local" id="syphonFDateTo" onchange="renderSyphonTable()">
+          <label>Sort:</label>
+          <select id="syphonFSort" onchange="applySyphonSort(this.value)">
+            <option value="desc">Terbaru</option>
+            <option value="asc">Terlama</option>
+          </select>
+          <input type="text" id="syphonFSearch" placeholder="Search..." oninput="renderSyphonTable()" style="width:140px">
+        </div>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="cb-cell"><input type="checkbox" id="syphonSelectAllCb" onchange="syphonToggleSelectAll(this)" title="Pilih semua"></th>
+                <th onclick="syphonSortTable(0)" class="sortable" data-col="0">#</th>
+                <th onclick="syphonSortTable(1)" class="sortable" data-col="1">Date &amp; Time</th>
+                <th onclick="syphonSortTable(2)" class="sortable" data-col="2">Player</th>
+                <th onclick="syphonSortTable(3)" class="sortable" data-col="3">Reason</th>
+                <th onclick="syphonSortTable(4)" class="sortable" data-col="4">Amount</th>
+                <th onclick="syphonSortTable(5)" class="sortable" data-col="5">Running Balance</th>
+                <th style="width:90px">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="syphonTblBody">
+              <tr><td colspan="8" class="empty">Paste log syphon atau tambah manual</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination" id="syphonPagination"></div>
+      </div>
+
+      <!-- SYPHON PLAYER SUMMARY -->
+      <div class="section-card" style="margin-bottom:12px">
+        <div class="section-header" style="margin-bottom:10px">
+          <span class="section-title">👥 Rekap Per Player</span>
+        </div>
+        <div id="syphonPlayerSummaryGrid" class="monthly-grid">
+          <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+        </div>
+      </div>
+
+      <!-- SYPHON PERIOD SUMMARY -->
+      <div class="section-card">
+        <div class="section-header" style="margin-bottom:10px">
+          <span class="section-title">📅 Rekap Per Periode</span>
+        </div>
+        <div id="syphonPeriodGrid" class="monthly-grid">
+          <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -255,6 +358,38 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
   </div>
 </div>
 
+<!-- EDIT SYPHON MODAL -->
+<div id="syphonEditModal" class="modal">
+  <div class="modal-content">
+    <h3 style="margin-bottom:16px">✏️ Edit Syphon</h3>
+    <div id="syphonEditError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:12px;display:none"></div>
+    <input id="syphonEditDate" type="datetime-local" placeholder="2026-04-01T05:05">
+    <input id="syphonEditPlayer" type="text" placeholder="Player Name">
+    <input id="syphonEditReason" type="text" placeholder="Reason / Keterangan">
+    <input id="syphonEditAmount" type="number" placeholder="Amount">
+    <div class="btn-row" style="margin-top:20px">
+      <button onclick="saveSyphonEdit()" class="btn-green">💾 Simpan Perubahan</button>
+      <button onclick="closeSyphonModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD SYPHON MODAL -->
+<div id="syphonAddModal" class="modal">
+  <div class="modal-content">
+    <h3 style="margin-bottom:16px">➕ Tambah Syphon Baru</h3>
+    <div id="syphonAddError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:12px;display:none"></div>
+    <input id="syphonAddDate" type="datetime-local" placeholder="2026-04-01T05:05">
+    <input id="syphonAddPlayer" type="text" placeholder="Player Name">
+    <input id="syphonAddReason" type="text" placeholder="Reason / Keterangan">
+    <input id="syphonAddAmount" type="number" placeholder="Amount">
+    <div class="btn-row" style="margin-top:20px">
+      <button onclick="saveSyphonAdd()" class="btn-green">💾 Simpan</button>
+      <button onclick="closeSyphonAddModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
 <!-- RESET CONFIRM MODAL -->
 <div id="resetModal" class="modal">
   <div class="modal-content" style="max-width:500px">
@@ -279,6 +414,18 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
     <div class="btn-row" style="margin-top:16px">
       <button onclick="confirmBulkDelete()" class="btn-danger" style="background:#dc2626;color:#fff;border-color:#dc2626">🗑 Hapus Terpilih</button>
       <button onclick="closeBulkModal()" style="margin-left:auto">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- SYPHON BULK DELETE MODAL -->
+<div id="syphonBulkModal" class="modal">
+  <div class="modal-content" style="max-width:500px">
+    <h3 style="margin-bottom:12px">🗑️ Hapus Syphon Terpilih</h3>
+    <p style="font-size:13px;color:#64748b;margin-bottom:16px">Hapus <strong id="syphonBulkCount">0</strong> syphon yang dipilih?</p>
+    <div class="btn-row" style="margin-top:16px">
+      <button onclick="confirmSyphonBulkDelete()" class="btn-danger" style="background:#dc2626;color:#fff;border-color:#dc2626">🗑 Hapus Terpilih</button>
+      <button onclick="closeSyphonBulkModal()" style="margin-left:auto">Batal</button>
     </div>
   </div>
 </div>
