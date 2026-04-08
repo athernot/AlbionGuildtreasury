@@ -1,4 +1,4 @@
-const CACHE_NAME = 'albion-treasury-v6';
+const CACHE_NAME = 'albion-treasury-v8';
 const ASSETS = [
   './',
   './login.html',

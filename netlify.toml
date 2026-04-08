@@ -26,6 +26,13 @@
   [headers.values]
     Cache-Control = "no-cache"
 
+# app.js and sw.js change every release — use short cache
+[[headers]]
+  for = "/app.js"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+# All other .js files (none currently, but future-proof)
 [[headers]]
   for = "/*.js"
   [headers.values]

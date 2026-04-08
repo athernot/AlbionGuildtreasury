@@ -11,7 +11,6 @@
   let undoTimeout = null;
   /** @type {object|null} */
   let balMapCache = null;
-  let balMapCacheVersion = 0;
   const APP_VERSION = 'V8.0';
   const STORAGE_KEY = 'albionGuildTreasuryV80';
   /** @type {{col:number,dir:'asc'|'desc'}} */
@@ -255,11 +254,6 @@
   function getInitialBalance() {
     const el = document.getElementById('initBal');
     return el ? parseFloat(el.value) || 0 : 0;
-  }
-
-  function setInitialBalance(val) {
-    const el = document.getElementById('initBal');
-    if (el) el.value = val;
   }
 
   function safeAddListener(id, event, handler) {
