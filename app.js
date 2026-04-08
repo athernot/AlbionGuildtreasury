@@ -2296,6 +2296,161 @@ function exportPDF() {
   win.onload = function() { win.print(); };
 }
 
+// ==================== SYPHON EXPORT ====================
+function autoDownloadSyphonExcel() {
+  showLoading('Membuat Excel Syphon...');
+  setTimeout(() => {
+    const wb = XLSX.utils.book_new();
+    const filtered = getSyphonFilteredRows();
+    const exportRows = filtered.length > 0 ? filtered : syphonRows;
+    const balMap = syphonBalMapCache || buildSyphonBalMap();
+    const sorted = [...exportRows].sort((a,b) => a.date.localeCompare(b.date));
+    const txAoa = [['#','Date & Time','Player','Reason','Amount','Running Balance']];
+    sorted.forEach((r,i) => txAoa.push([i+1, r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? '']));
+    const ws1 = XLSX.utils.aoa_to_sheet(txAoa);
+    ws1['!cols'] = [{wch:5},{wch:22},{wch:16},{wch:14},{wch:14},{wch:18}];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Log Syphon');
+
+    const periodData = buildSyphonPeriodData();
+    const pKeys = Object.keys(periodData).sort((a,b) => b.localeCompare(a));
+    const pAoa = [['Bulan - Minggu','Tanggal / Periode','Total Masuk','Total Keluar','Net']];
+    pKeys.forEach(k => {
+      const w = periodData[k];
+      pAoa.push([`Bulan ${w.ym} - Minggu ${w.week}`, 'Mingguan', w.dep, w.wit, w.net]);
+      const dKeys = Object.keys(w.days).sort((a,b)=>b.localeCompare(a));
+      dKeys.forEach(d => {
+        const dayData = w.days[d];
+        pAoa.push(['', d, dayData.dep, dayData.wit, dayData.net]);
+      });
+    });
+    const wsP = XLSX.utils.aoa_to_sheet(pAoa);
+    wsP['!cols'] = [{wch:25},{wch:18},{wch:15},{wch:15},{wch:15}];
+    XLSX.utils.book_append_sheet(wb, wsP, 'Rekap Mingguan & Harian');
+
+    const {monthOrder, monthMap} = buildSyphonMonthlyData();
+    const mAoa = [['Bulan','Saldo Awal (Tgl 1)','Total Masuk','Total Keluar','Net','Saldo Akhir','Jumlah Transaksi']];
+    monthOrder.forEach(ym => {
+      const m = monthMap[ym];
+      mAoa.push([monthLabel(ym), m.openBal, m.dep, m.wit, m.dep+m.wit, m.closeBal, m.count]);
+    });
+    const totalDep = monthOrder.reduce((s,ym) => s + monthMap[ym].dep, 0);
+    const totalWit = monthOrder.reduce((s,ym) => s + monthMap[ym].wit, 0);
+    mAoa.push(['TOTAL','',''+totalDep,''+totalWit,''+(totalDep+totalWit),'',''+syphonRows.length]);
+    const ws2 = XLSX.utils.aoa_to_sheet(mAoa);
+    ws2['!cols'] = [{wch:12},{wch:20},{wch:16},{wch:16},{wch:14},{wch:16},{wch:18}];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Rekap Bulanan');
+
+    const now = new Date();
+    const ws3 = XLSX.utils.aoa_to_sheet([
+      ['Guild Syphon — Albion Online ' + APP_VERSION],
+      ['Generated', now.toLocaleString('id-ID')],
+      ['Total Transaksi', syphonRows.length],
+      ['Filtered', filtered.length > 0 ? filtered.length : syphonRows.length],
+      ['Current Balance', syphonRows.reduce((s,r) => s + r.amount, 0)]
+    ]);
+    XLSX.utils.book_append_sheet(wb, ws3, 'Info');
+
+    const ts = now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
+    const suffix = filtered.length > 0 && filtered.length < syphonRows.length ? '_filtered' : '';
+    const fname = `guild_syphon${suffix}_${ts}.xlsx`;
+    XLSX.writeFile(wb, fname);
+
+    hideLoading();
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = `${fname} terunduh! (${exportRows.length} tx)`;
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 3500);
+  }, 50);
+}
+
+function exportSyphonCSV() {
+  if (!syphonRows.length) return alert('Tidak ada data');
+  const filtered = getSyphonFilteredRows();
+  const exportRows = filtered.length > 0 ? filtered : syphonRows;
+  const balMap = syphonBalMapCache || buildSyphonBalMap();
+  const csvContent = [
+    ['Date & Time','Player','Reason','Amount','Running Balance'],
+    ...exportRows.map(r => [r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? ''])
+  ].map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `guild_syphon${filtered.length > 0 && filtered.length < syphonRows.length ? '_filtered' : ''}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  const toast = document.getElementById('dlToast');
+  document.getElementById('dlToastText').innerHTML = `✅ CSV berhasil diunduh! (${exportRows.length} tx)`;
+  toast.classList.add('show');
+  setTimeout(() => hideToast('dlToast'), 3000);
+}
+
+function exportSyphonPDF() {
+  if (!syphonRows.length) return alert('Tidak ada data');
+  const filtered = getSyphonFilteredRows();
+  const exportRows = filtered.length > 0 ? filtered : syphonRows;
+  const balMap = syphonBalMapCache || buildSyphonBalMap();
+  const sorted = [...exportRows].sort((a, b => a.date.localeCompare(b.date)));
+  const totalDep = exportRows.reduce((s, r) => s + (r.amount > 0 ? r.amount : 0), 0);
+  const totalWit = exportRows.reduce((s, r) => s + (r.amount < 0 ? r.amount : 0), 0);
+  const net = totalDep + totalWit;
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Guild Syphon Report</title>';
+  html += '<style>';
+  html += '@page{margin:1.5cm}';
+  html += 'body{font-family:Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:0}';
+  html += '.rpt-header{text-align:center;border-bottom:2px solid #8b5cf6;padding-bottom:10px;margin-bottom:16px}';
+  html += '.rpt-header h1{font-size:16px;color:#8b5cf6;margin:0}';
+  html += '.rpt-header p{font-size:10px;color:#64748b;margin:4px 0 0}';
+  html += '.rpt-summary{display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap}';
+  html += '.rpt-stat{flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px}';
+  html += '.rpt-stat-label{font-size:9px;color:#94a3b8;text-transform:uppercase}';
+  html += '.rpt-stat-value{font-size:14px;font-weight:700}';
+  html += '.green{color:#1D9E75}.red{color:#D85A30}.amber{color:#BA7517}';
+  html += 'table{width:100%;border-collapse:collapse;margin-bottom:16px}';
+  html += 'th{background:#f1f5f9;text-align:left;padding:6px 8px;font-size:9px;color:#64748b;border-bottom:1px solid #e2e8f0}';
+  html += 'td{padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:10px}';
+  html += 'tr:nth-child(even){background:#fafafa}';
+  html += '.amount-pos{color:#1D9E75;font-weight:600}.amount-neg{color:#D85A30;font-weight:600}';
+  html += '.rpt-footer{font-size:9px;color:#94a3b8;text-align:center;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:8px}';
+  html += '</style></head><body>';
+
+  html += '<div class="rpt-header"><h1>Guild Syphon — Albion Online</h1>';
+  html += '<p>Laporan: ' + new Date().toLocaleString('id-ID') + ' | ' + sorted.length + ' transaksi</p></div>';
+
+  html += '<div class="rpt-summary">';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Masuk</div><div class="rpt-stat-value green">+' + fmt(totalDep) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Keluar</div><div class="rpt-stat-value red">' + fmt(totalWit) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Net</div><div class="rpt-stat-value ' + (net >= 0 ? 'green' : 'red') + '">' + (net >= 0 ? '+' : '') + fmt(net) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Saldo Akhir</div><div class="rpt-stat-value amber">' + fmt(net) + '</div></div>';
+  html += '</div>';
+
+  html += '<table><thead><tr><th>#</th><th>Tanggal</th><th>Player</th><th>Reason</th><th>Amount</th><th>Balance</th></tr></thead><tbody>';
+  sorted.forEach(function(r, i) {
+    var bal = balMap[rowKey(r)] ?? '';
+    var cls = r.amount >= 0 ? 'amount-pos' : 'amount-neg';
+    html += '<tr><td>' + (i + 1) + '</td><td>' + escHtml(r.date) + '</td><td>' + escHtml(r.player) + '</td><td>' + escHtml(r.reason) + '</td><td class="' + cls + '">' + fmt(r.amount) + '</td><td>' + fmt(bal) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+
+  html += '<div class="rpt-footer">Guild Syphon V8.0 — Generated ' + new Date().toLocaleString('id-ID') + '</div>';
+  html += '</body></html>';
+
+  var win = window.open('', '_blank');
+  if (!win) return alert('⚠️ Pop-up diblokir. Izinkan pop-up untuk export PDF.');
+  win.document.write(html);
+  win.document.close();
+  win.onload = function() { win.print(); };
+}
+
+function updateSyphonDownloadBtn() {
+  const btn = document.getElementById('syphonDlBtn');
+  const has = syphonRows.length > 0;
+  btn.disabled = !has;
+  btn.style.opacity = has ? '1' : '0.4';
+  btn.style.cursor = has ? 'pointer' : 'not-allowed';
+}
+
 // ==================== TAB SWITCH ====================
 function switchTab(n) {
   document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === n));
@@ -2524,6 +2679,7 @@ function refreshSyphon() {
   renderSyphonPeriod();
   renderSyphonMonthly();
   renderSyphonChart();
+  updateSyphonDownloadBtn();
 }
 
   function refreshAll() {
@@ -2632,6 +2788,9 @@ window.onload = async function () {
     safeAddListener('syphonFSort', 'change', function() { applySyphonSort(this.value); });
     safeAddListener('syphonFSearch', 'input', renderSyphonTable);
     safeAddListener('syphonSelectAllCb', 'change', function() { syphonToggleSelectAll(this); });
+    safeAddListener('syphonDlBtn', 'click', autoDownloadSyphonExcel);
+    safeAddListener('syphonCsvBtn', 'click', exportSyphonCSV);
+    safeAddListener('syphonPdfBtn', 'click', exportSyphonPDF);
 
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
       btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
@@ -2835,4 +2994,8 @@ function showUpdateBanner() {
   window.changeSyphonRPP = changeSyphonRPP;
   window.syphonSortTable = syphonSortTable;
   window.applySyphonSort = applySyphonSort;
+  window.autoDownloadSyphonExcel = autoDownloadSyphonExcel;
+  window.exportSyphonCSV = exportSyphonCSV;
+  window.exportSyphonPDF = exportSyphonPDF;
+  window.updateSyphonDownloadBtn = updateSyphonDownloadBtn;
 })();
