@@ -49,6 +49,20 @@ self.addEventListener('activate', function(event) {
 self.addEventListener('fetch', function(event) {
   if (event.request.method !== 'GET') return;
 
+  var url = event.request.url;
+
+  // Skip chrome-extension:// URLs (browser extensions)
+  if (url.indexOf('chrome-extension://') === 0 || url.indexOf('chrome://') === 0) return;
+
+  // Skip external CDN URLs — don't cache them at runtime
+  // (only cache at install time, fetch them directly from network at runtime)
+  if (url.indexOf('https://cdnjs.cloudflare.com') === 0) {
+    event.respondWith(fetch(event.request).catch(function() {
+      return null;
+    }));
+    return;
+  }
+
   // Use network-first strategy for navigation requests
   if (event.request.mode === 'navigate') {
     event.respondWith(
@@ -71,6 +85,8 @@ self.addEventListener('fetch', function(event) {
             event.waitUntil(
               caches.open(CACHE_NAME).then(function(cache) {
                 return cache.put(event.request, responseToCache);
+              }).catch(function() {
+                // Ignore cache write errors
               })
             );
           }
@@ -90,12 +106,19 @@ self.addEventListener('fetch', function(event) {
           event.waitUntil(
             caches.open(CACHE_NAME).then(function(cache) {
               return cache.put(event.request, responseToCache);
+            }).catch(function() {
+              // Ignore cache write errors
             })
           );
         }
         return response;
       }).catch(function() {
         // Return null if both cache and network fail
+        return null;
+      });
+    }).catch(function() {
+      // Cache.match failed (e.g., invalid scheme), fetch from network
+      return fetch(event.request).catch(function() {
         return null;
       });
     })

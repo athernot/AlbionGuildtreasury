@@ -163,6 +163,14 @@
   function rowKey(r){ return r.id + '|||' + r.date + '|||' + r.player + '|||' + r.reason + '|||' + r.amount; }
 
   /**
+   * Generate a key for duplicate detection (without id)
+   * Two transactions with same date/player/reason/amount are considered duplicates
+   * @param {object} r
+   * @returns {string}
+   */
+  function dupKey(r){ return r.date + '|||' + r.player + '|||' + r.reason + '|||' + r.amount; }
+
+  /**
    * Escape HTML special characters to prevent XSS
    * @param {string} str
    * @returns {string}
@@ -505,9 +513,8 @@ function updateStorageBadge() {
   showLoading('Parsing log...');
   setTimeout(() => {
     const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-    if (existingKeysCache.size === 0 || existingKeysCache.size !== rows.length) {
-      existingKeysCache = new Set(rows.map(rowKey));
-    }
+    // Build duplicate detection cache using dupKey (without id)
+    const dupCache = new Set(rows.map(dupKey));
     const added = [], duplicates = [];
     for (const line of lines) {
       if (/^\s*"?date\s+"?player\s+"?reason\s+"?amount/i.test(line)) continue;
@@ -518,12 +525,13 @@ function updateStorageBadge() {
       if (isNaN(amt) || !isFinite(amt)) continue;
       const entry = { date: values[0], player: values[1], reason: values[2], amount: amt, id: generateId(), playerLc: values[1].toLowerCase(), reasonLc: values[2].toLowerCase() };
       if (!isValidDate(entry.date)) continue;
-      const key = rowKey(entry);
-      if (existingKeysCache.has(key)) {
+      const key = dupKey(entry);
+      if (dupCache.has(key)) {
         duplicates.push(entry);
       } else {
         rows.push(entry);
-        existingKeysCache.add(key);
+        dupCache.add(key);
+        existingKeysCache.add(rowKey(entry));
         dirtyIds.added.add(entry.id);
         added.push(entry);
       }
