@@ -1746,6 +1746,22 @@ function hideLoading() {
 
 // ==================== INIT ====================
 window.onload = async function () {
+  // CRITICAL: Unregister old Service Workers that may serve stale cached content
+  // This fixes the "syphon functions not defined" crash for users with old SW cache
+  if ('serviceWorker' in navigator) {
+    var hasOldSw = navigator.serviceWorker.controller;
+    var lastCleanup = sessionStorage.getItem('swCleanupDone');
+    if (hasOldSw && !lastCleanup) {
+      var regs = await navigator.serviceWorker.getRegistrations();
+      for (var i = 0; i < regs.length; i++) {
+        regs[i].unregister();
+      }
+      sessionStorage.setItem('swCleanupDone', '1');
+      // Reload once to load fresh content without old SW
+      window.location.reload();
+      return;
+    }
+  }
   try {
     await initDB();
     try {
