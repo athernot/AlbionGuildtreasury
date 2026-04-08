@@ -276,13 +276,22 @@
 
   /**
    * Safely set element property only if element exists
+   * Supports nested properties like 'style.display', 'classList.add', etc.
    * @param {string} id
-   * @param {string} prop
+   * @param {string} prop - Property path (e.g. 'style.display', 'textContent')
    * @param {*} value
    */
   function safeSet(id, prop, value) {
     const el = document.getElementById(id);
-    if (el) el[prop] = value;
+    if (!el) return;
+    // Handle nested properties like 'style.display'
+    var parts = prop.split('.');
+    var obj = el;
+    for (var i = 0; i < parts.length - 1; i++) {
+      obj = obj[parts[i]];
+      if (!obj) return;
+    }
+    obj[parts[parts.length - 1]] = value;
   }
 
 // ==================== AUTH ====================
