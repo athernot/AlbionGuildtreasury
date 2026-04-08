@@ -310,9 +310,6 @@
    * Save data to localStorage or IndexedDB (debounced 300ms)
    * @returns {Promise<void>}
    */
-let savePendingPromise = null;
-let savePendingResolve = null;
-let savePendingReject = null;
 
 async function saveToStorage() {
   // Clear existing timer if any
@@ -755,7 +752,8 @@ function showSyphonNotices(addedCount, duplicates) {
   // Compute net24 and netWeek from balMapCache (sorted iteration)
   const latestDate = new Date(s.latestTime);
   const latestYm = latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0');
-  const latestWeek = getWeekOfMonth(latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0') + '-' + String(latestDate.getDate()).padStart(2,'0') + ' ' + String(latestDate.getHours()).padStart(2,'0') + ':' + String(latestDate.getMinutes()).padStart(2,'0') + ':' + String(latestDate.getSeconds()).padStart(2,'0'));
+  const latestDateStr = latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0') + '-' + String(latestDate.getDate()).padStart(2,'0');
+  const latestWeek = getWeekOfMonth(latestDateStr);
   let net24 = 0, netWeek = 0;
   sortedRowsCache.forEach(r => {
     const rt = new Date(r.date.replace(' ', 'T')).getTime();
@@ -1414,13 +1412,12 @@ function deleteSyphonTransaction(id) {
 }
 
 function showSyphonUndoToast() {
-  const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').innerHTML = `Syphon dihapus. <strong>Undo?</strong>`;
+  const toast = document.getElementById('undoToast');
+  document.getElementById('undoToastText').innerHTML = `Syphon dihapus. <strong>Undo?</strong>`;
   toast.style.display = 'flex';
   toast.classList.add('show');
-  toast.onclick = undoSyphon;
   if (undoTimeout) clearTimeout(undoTimeout);
-  undoTimeout = setTimeout(() => hideToast('dlToast'), 5000);
+  undoTimeout = setTimeout(() => hideToast('undoToast'), 5000);
 }
 
 function undoSyphon() {
@@ -2727,7 +2724,7 @@ function registerPWA() {
   });
 
   if (window.matchMedia('(display-mode: standalone)').matches) {
-    console.log('PWA: Running as installed app');
+    // PWA running as installed app
   }
 }
 

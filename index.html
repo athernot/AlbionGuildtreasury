@@ -247,7 +247,7 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
 
       <!-- SYPHON STATS ROW -->
       <div class="section-card" style="margin-bottom:12px">
-        <div class="stats-row" style="background:#transparent;border:none;padding:0">
+        <div class="stats-row" style="background:transparent;border:none;padding:0">
           <div class="stat"><div class="stat-label">Current Balance</div><div class="stat-value amber" id="syphon-st-bal">0</div></div>
           <div class="stat"><div class="stat-label">Total Deposit</div><div class="stat-value green" id="syphon-st-dep">0</div></div>
           <div class="stat"><div class="stat-label">Total Withdrawal</div><div class="stat-value red" id="syphon-st-wit">0</div></div>
@@ -307,6 +307,16 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
           </table>
         </div>
         <div class="pagination" id="syphonPagination"></div>
+      </div>
+
+      <!-- SYPHON PLAYER SUMMARY -->
+      <div class="section-card">
+        <div class="section-header" style="margin-bottom:10px">
+          <span class="section-title">👥 Rekap Per Player</span>
+        </div>
+        <div id="syphonPlayerSummaryGrid" class="monthly-grid">
+          <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+        </div>
       </div>
       </div>
 
