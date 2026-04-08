@@ -1835,12 +1835,28 @@ function registerPWA() {
         var newWorker = reg.installing;
         newWorker.addEventListener('statechange', function() {
           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            showUpdateBanner();
+            // New SW installed — force reload to get fresh content
+            window.location.reload();
           }
         });
       });
     }).catch(function(err) {
       console.warn('PWA: SW registration failed:', err);
+    });
+  }
+
+  // Listen for SW cache update message — auto reload
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'CACHE_UPDATED') {
+        // SW activated with new cache — reload once to use fresh content
+        var lastReload = sessionStorage.getItem('swLastReload');
+        var now = Date.now();
+        if (!lastReload || (now - parseInt(lastReload)) > 10000) {
+          sessionStorage.setItem('swLastReload', now);
+          window.location.reload();
+        }
+      }
     });
   }
 

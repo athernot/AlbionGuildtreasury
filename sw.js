@@ -1,4 +1,4 @@
-const CACHE_NAME = 'albion-treasury-v5';
+const CACHE_NAME = 'albion-treasury-v6';
 const ASSETS = [
   './',
   './login.html',
@@ -33,7 +33,15 @@ self.addEventListener('activate', function(event) {
         })
       );
     }).then(function() {
+      // Force take control of all open pages immediately
       return self.clients.claim();
+    }).then(function() {
+      // Tell all clients to reload with fresh content
+      return self.clients.matchAll({type: 'window'}).then(function(clients) {
+        clients.forEach(function(client) {
+          client.postMessage({type: 'CACHE_UPDATED', version: CACHE_NAME});
+        });
+      });
     })
   );
 });
