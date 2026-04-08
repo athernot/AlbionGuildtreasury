@@ -39,28 +39,14 @@
   let statsCache = null;
   let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
 
-  // ==================== SYPHON TRACKER GLOBAL VARIABLES ====================
-  let syphonRows = [];
-  let syphonLastDeleted = null;
-  let syphonLastBulkDeleted = null;
-  let syphonEditingId = null;
-  const SYPHON_STORAGE_KEY = 'albionSyphonTreasuryV80';
-  let syphonCurrentSort = { col: 1, dir: 'desc' };
-  let syphonSelectedIds = new Set();
-  let syphonCurrentPage = 1;
-  let syphonRowsPerPage = 50;
-  let syphonExistingKeysCache = new Set();
-  let syphonDirtyIds = { added: new Set(), deleted: new Set() };
-  let syphonLastDuplicates = [];
-  let syphonBalMapCache = null;
-  let syphonStatsCache = null;
-  let syphonFilterCache = { players: null, reasons: null, version: -1 };
-  let syphonSortedRowsCache = null;
-
   function logAudit(action, details) {
   auditLog.push({ timestamp: new Date().toISOString(), action: action, details: details });
   if (auditLog.length > 500) auditLog = auditLog.slice(-500);
-  try { localStorage.setItem('albionAuditLog', JSON.stringify(auditLog)); } catch(e) {}
+  try { localStorage.setItem('albionAuditLog', JSON.stringify(auditLog)); } catch(e) {
+    console.warn('⚠️ Audit log gagal disimpan ke localStorage:', e);
+    // Silently drop oldest entries to stay within limits
+    if (auditLog.length > 100) auditLog = auditLog.slice(-100);
+  }
 }
 
   // ==================== INDEXEDDB ====================
@@ -170,10 +156,11 @@
 
   /**
    * Generate a unique key for a transaction row (used for running balance map)
+   * Includes the row id to prevent collision on identical transactions
    * @param {object} r
    * @returns {string}
    */
-  function rowKey(r){ return r.date + '|||' + r.player + '|||' + r.reason + '|||' + r.amount; }
+  function rowKey(r){ return r.id + '|||' + r.date + '|||' + r.player + '|||' + r.reason + '|||' + r.amount; }
 
   /**
    * Escape HTML special characters to prevent XSS
@@ -204,17 +191,20 @@
 
 // ==================== PERBAIKAN FILTER TANGGAL (FIX UTAMA) ====================
   /**
-   * Convert date string to timestamp (ms)
+   * Convert date string to timestamp (ms) at local midnight for consistent date comparison
    * @param {string} dateStr
    * @returns {number}
    */
    function getTimestamp(dateStr) {
    if (!dateStr) return 0;
-   const normalized = dateStr.replace(' ', 'T');
-   const d = new Date(normalized);
+   // Extract date portion only (YYYY-MM-DD) for consistent comparison
+   const datePart = dateStr.split(/[T ]/)[0];
+   const parts = datePart.split('-');
+   if (parts.length !== 3) return 0;
+   // Create date at local midnight to avoid timezone shift issues
+   const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
    if (isNaN(d.getTime())) return 0;
-   // Compensate for timezone offset to ensure consistent date comparison
-   return d.getTime() + d.getTimezoneOffset() * 60000;
+   return d.getTime();
 }
 
   /**
@@ -269,6 +259,24 @@
     if (el) el.addEventListener(event, handler);
   }
 
+  /**
+   * Safely get element by ID, returns null if not found
+   * @param {string} id
+   * @returns {HTMLElement|null}
+   */
+  function $(id) { return document.getElementById(id); }
+
+  /**
+   * Safely set element property only if element exists
+   * @param {string} id
+   * @param {string} prop
+   * @param {*} value
+   */
+  function safeSet(id, prop, value) {
+    const el = document.getElementById(id);
+    if (el) el[prop] = value;
+  }
+
 // ==================== AUTH ====================
   function toggleDarkMode() {
     document.body.classList.toggle('dark');
@@ -283,63 +291,51 @@
     window.location.href = './login.html';
   }
 
-  function toggleSyphonMode() {
-    const treasuryTabs = document.getElementById('treasuryTabs');
-    const syphonTabs = document.getElementById('syphonTabs');
-    const syphonBtn = document.getElementById('syphonBtn');
-    
-    const isShowingSyphon = syphonTabs.style.display !== 'none';
-    
-    if (isShowingSyphon) {
-      // Switch to Treasury
-      treasuryTabs.style.display = 'block';
-      syphonTabs.style.display = 'none';
-      syphonBtn.textContent = '🔮 Syphon';
-      localStorage.setItem('syphonModeActive', '0');
-    } else {
-      // Switch to Syphon
-      treasuryTabs.style.display = 'none';
-      syphonTabs.style.display = 'block';
-      syphonBtn.textContent = '📊 Treasury';
-      localStorage.setItem('syphonModeActive', '1');
-    }
-  }
-
   // ==================== STORAGE (Hybrid) ====================
+  /** @type {Promise<void>|null} */
+  let savePromise = null;
   /**
    * Save data to localStorage or IndexedDB (debounced 300ms)
    * @returns {Promise<void>}
    */
+  async function saveToStorage() {
+    // Clear existing timer if any
+    if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
 
-async function saveToStorage() {
-  // Clear existing timer if any
-  if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
-  
-  // Return a new promise that will be resolved/rejected after debounce
-  return new Promise((resolve, reject) => {
-    saveDebounceTimer = setTimeout(async () => {
-      try {
-        const init = parseFloat(document.getElementById('initBal').value) || 0;
-        if (useIndexedDB && db) {
-          try { await saveToIndexedDB(); } catch(e) {
-            // Fallback to localStorage on IndexedDB error
-            useIndexedDB = false;
+    // If there's an existing pending promise, return it
+    // so callers don't hang waiting for a promise that will never resolve
+    if (savePromise) return savePromise;
+
+    // Return a new promise that will be resolved/rejected after debounce
+    savePromise = new Promise((resolve, reject) => {
+      saveDebounceTimer = setTimeout(async () => {
+        saveDebounceTimer = null;
+        savePromise = null;
+        try {
+          const init = getInitialBalance();
+          if (useIndexedDB && db) {
+            try { await saveToIndexedDB(); } catch(e) {
+              // Fallback to localStorage on IndexedDB error
+              useIndexedDB = false;
+              const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            }
+          } else {
             const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
           }
-        } else {
-          const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          lastSavedTime = Date.now();
+          updateStorageBadge();
+          resolve();
+        } catch (error) {
+          savePromise = null;
+          reject(error);
         }
-        lastSavedTime = Date.now();
-        updateStorageBadge();
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    }, 300);
-  });
-}
+      }, 300);
+    });
+
+    return savePromise;
+  }
 
 async function loadFromStorage() {
   if (rows.length > 5000) {
@@ -406,51 +402,6 @@ function updateStorageBadge() {
   }
 }
 
-// ==================== SYPHON STORAGE FUNCTIONS ====================
-async function saveSyphonToStorage() {
-  if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
-  return new Promise((resolve, reject) => {
-    saveDebounceTimer = setTimeout(async () => {
-      try {
-        const data = { version: APP_VERSION, timestamp: Date.now(), rows: syphonRows };
-        localStorage.setItem(SYPHON_STORAGE_KEY, JSON.stringify(data));
-        lastSavedTime = Date.now();
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    }, 300);
-  });
-}
-
-function loadSyphonFromStorage() {
-  const saved = localStorage.getItem(SYPHON_STORAGE_KEY);
-  if (!saved) return;
-  let data;
-  try { data = JSON.parse(saved); } catch(e) { return; }
-  syphonRows = (data.rows || []).map(function(r) {
-    if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
-    if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
-    return r;
-  });
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  syphonExistingKeysCache = new Set(syphonRows.map(rowKey));
-  syphonDirtyIds.added.clear();
-  syphonDirtyIds.deleted.clear();
-}
-
-function saveSyphonJSONBackup() {
-  if (syphonRows.length === 0) return alert('Tidak ada data syphon untuk di-backup.');
-  const data = { version: APP_VERSION, timestamp: Date.now(), rows: syphonRows };
-  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `syphon_tracker_backup_${new Date().toISOString().slice(0,10)}.json`;
-  a.click(); URL.revokeObjectURL(url);
-}
-
 // ==================== FILE UPLOAD & PARSE LOG ====================
   // Handle file upload (Excel .xlsx or JSON backup)
   function handleFileSelect(e) {
@@ -506,6 +457,10 @@ function saveSyphonJSONBackup() {
     };
     reader.readAsText(file);
   } else {
+    // Check if XLSX library is available
+    if (typeof XLSX === 'undefined') {
+      return alert('⚠️ Library XLSX (SheetJS) belum dimuat. Pastikan koneksi internet tersedia untuk memuat library dari CDN.\n\nAlternatif: Gunakan file JSON backup.');
+    }
     const reader = new FileReader();
     reader.onload = function(ev) {
       try {
@@ -585,12 +540,12 @@ function saveSyphonJSONBackup() {
 
 function showNotices(addedCount, duplicates) {
   lastDuplicates = duplicates;
-  document.getElementById('dupNotice').style.display = 'none';
-  document.getElementById('okNotice').className = '';
-  document.getElementById('mergeDupBtn').style.display = duplicates.length > 0 ? 'inline-block' : 'none';
+  safeSet('dupNotice', 'style.display', 'none');
+  safeSet('okNotice', 'className', '');
+  safeSet('mergeDupBtn', 'style.display', duplicates.length > 0 ? 'inline-block' : 'none');
   if (duplicates.length > 0) {
-    document.getElementById('dupSummary').textContent = `${duplicates.length} baris dilewati (duplikat). ${addedCount} baris baru ditambahkan.`;
-    document.getElementById('dupBody').innerHTML = duplicates.map((r,i) => `
+    safeSet('dupSummary', 'textContent', `${duplicates.length} baris dilewati (duplikat). ${addedCount} baris baru ditambahkan.`);
+    safeSet('dupBody', 'innerHTML', duplicates.map((r,i) => `
       <tr>
         <td style="color:#aaa">${i+1}</td>
         <td>${escHtml(r.date)}</td>
@@ -598,13 +553,13 @@ function showNotices(addedCount, duplicates) {
         <td>${escHtml(r.reason)}</td>
         <td style="color:${r.amount>=0?'#1D9E75':'#D85A30'};font-weight:600">${fmt(r.amount)}</td>
         <td><span style="background:#fde68a;color:#78350f;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600">DUPLIKAT</span></td>
-      </tr>`).join('');
-    document.getElementById('dupNotice').style.display = 'block';
-    setTimeout(() => { document.getElementById('dupNotice').style.display = 'none'; }, 8000);
+      </tr>`).join(''));
+    safeSet('dupNotice', 'style.display', 'block');
+    setTimeout(() => { safeSet('dupNotice', 'style.display', 'none'); }, 8000);
   } else if (addedCount > 0) {
-    document.getElementById('okText').textContent = `${addedCount} transaksi berhasil ditambahkan.`;
-    document.getElementById('okNotice').className = 'visible';
-    setTimeout(() => { document.getElementById('okNotice').className = ''; }, 4000);
+    safeSet('okText', 'textContent', `${addedCount} transaksi berhasil ditambahkan.`);
+    safeSet('okNotice', 'className', 'visible');
+    setTimeout(() => { safeSet('okNotice', 'className', ''); }, 4000);
   }
 }
 
@@ -632,71 +587,16 @@ function mergeDuplicates() {
     }
   });
   lastDuplicates = [];
-  document.getElementById('dupNotice').style.display = 'none';
-  document.getElementById('mergeDupBtn').style.display = 'none';
+  safeSet('dupNotice', 'style.display', 'none');
+  safeSet('mergeDupBtn', 'style.display', 'none');
   balMapCache = null;
   sortedRowsCache = null;
   statsCache = null;
   saveToStorage();
   refreshAll();
-  document.getElementById('okText').textContent = '✅ ' + mergedCount + ' duplikat di-merge (amount dijumlahkan).';
-  document.getElementById('okNotice').className = 'visible';
-  setTimeout(() => { document.getElementById('okNotice').className = ''; }, 4000);
-}
-
-// ==================== SYPHON PARSE LOG ====================
-function parseSyphonLog() {
-  const raw = document.getElementById('syphonLogInput').value.trim();
-  if (!raw) return;
-  showLoading('Parsing syphon log...');
-  setTimeout(() => {
-    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-    if (syphonExistingKeysCache.size === 0 || syphonExistingKeysCache.size !== syphonRows.length) {
-      syphonExistingKeysCache = new Set(syphonRows.map(rowKey));
-    }
-    const added = [], duplicates = [];
-    for (const line of lines) {
-      if (/^\s*"?date\s+"?player\s+"?reason\s+"?amount/i.test(line)) continue;
-      const matches = line.match(/"([^"]*)"/g);
-      if (!matches || matches.length < 4) continue;
-      const values = matches.map(m => m.slice(1, -1));
-      const amt = parseFloat(values[3]);
-      if (isNaN(amt) || !isFinite(amt)) continue;
-      const entry = { date: values[0], player: values[1], reason: values[2], amount: amt, id: generateId(), playerLc: values[1].toLowerCase(), reasonLc: values[2].toLowerCase() };
-      if (!isValidDate(entry.date)) continue;
-      const key = rowKey(entry);
-      if (syphonExistingKeysCache.has(key)) {
-        duplicates.push(entry);
-      } else {
-        syphonRows.push(entry);
-        syphonExistingKeysCache.add(key);
-        syphonDirtyIds.added.add(entry.id);
-        added.push(entry);
-      }
-    }
-    hideLoading();
-    showSyphonNotices(added.length, duplicates);
-    syphonBalMapCache = null;
-    syphonSortedRowsCache = null;
-    syphonStatsCache = null;
-    saveSyphonToStorage();
-    refreshSyphon();
-  }, 50);
-}
-
-function showSyphonNotices(addedCount, duplicates) {
-  syphonLastDuplicates = duplicates;
-  if (duplicates.length > 0) {
-    const toast = document.getElementById('dlToast');
-    document.getElementById('dlToastText').textContent = `⚠️ ${duplicates.length} duplikat dilewati. ${addedCount} syphon baru ditambahkan.`;
-    toast.classList.add('show');
-    setTimeout(() => hideToast('dlToast'), 4000);
-  } else if (addedCount > 0) {
-    const toast = document.getElementById('dlToast');
-    document.getElementById('dlToastText').textContent = `✅ ${addedCount} syphon berhasil ditambahkan.`;
-    toast.classList.add('show');
-    setTimeout(() => hideToast('dlToast'), 3000);
-  }
+  safeSet('okText', 'textContent', '✅ ' + mergedCount + ' duplikat di-merge (amount dijumlahkan).');
+  safeSet('okNotice', 'className', 'visible');
+  setTimeout(() => { safeSet('okNotice', 'className', ''); }, 4000);
 }
 
 // ==================== STATS & BALANCE MAP ====================
@@ -789,70 +689,11 @@ function showSyphonNotices(addedCount, duplicates) {
   return balMapCache;
 }
 
-// ==================== SYPHON STATS & BALANCE ====================
-function computeSyphonStatsAndBalMap() {
-  const sorted = syphonSortedRowsCache && syphonSortedRowsCache.length === syphonRows.length
-    ? syphonSortedRowsCache
-    : [...syphonRows].sort((a, b) => a.date.localeCompare(b.date));
-
-  let dep = 0, wit = 0, net = 0;
-  let latestTime = 0;
-  let run = 0;
-  const map = {};
-
-  sorted.forEach(r => {
-    if (r.amount > 0) dep += r.amount; else wit += r.amount;
-    const t = new Date(r.date.replace(' ', 'T')).getTime();
-    if (t > latestTime) latestTime = t;
-    run += r.amount;
-    map[rowKey(r)] = run;
-  });
-
-  net = dep + wit;
-  syphonStatsCache = { dep, wit, net, latestTime, rowCount: syphonRows.length };
-  syphonBalMapCache = map;
-  syphonSortedRowsCache = sorted;
-  return { map, stats: syphonStatsCache };
-}
-
-function recalcSyphon() {
-  if (!syphonStatsCache || syphonStatsCache.rowCount !== syphonRows.length || syphonBalMapCache === null) {
-    computeSyphonStatsAndBalMap();
-  }
-  const s = syphonStatsCache;
-
-  if (!s.latestTime) {
-    document.getElementById('syphon-st-bal').textContent = '0';
-    document.getElementById('syphon-st-dep').textContent = '0';
-    document.getElementById('syphon-st-wit').textContent = '0';
-    document.getElementById('syphon-st-cnt').textContent = '0';
-    document.getElementById('syphon-st-net').textContent = '0';
-    document.getElementById('syphon-st-net').className = 'stat-value amber';
-    return;
-  }
-
-  const net = s.dep + s.wit;
-  document.getElementById('syphon-st-bal').textContent = fmt(net);
-  document.getElementById('syphon-st-dep').textContent = fmt(s.dep);
-  document.getElementById('syphon-st-wit').textContent = fmt(s.wit);
-  document.getElementById('syphon-st-cnt').textContent = syphonRows.length;
-  const netEl = document.getElementById('syphon-st-net');
-  netEl.textContent = (net >= 0 ? '+' : '') + fmt(net);
-  netEl.className = 'stat-value ' + (net > 0 ? 'green' : net < 0 ? 'red' : 'amber');
-}
-
-function buildSyphonBalMap() {
-  if (syphonBalMapCache && syphonStatsCache && syphonStatsCache.rowCount === syphonRows.length) {
-    return syphonBalMapCache;
-  }
-  computeSyphonStatsAndBalMap();
-  return syphonBalMapCache;
-}
-
 // ==================== FILTERS & TABLE (FILTER TANGGAL SUDAH DIFIX) ====================
   // Update filter dropdowns (player, reason) from current data
   function updateFilters() {
-  const version = rows.length;
+  // Use a simple checksum: count + first item's key to detect any data change
+  const version = rows.length + '_' + (rows[0] ? rows[0].id : '');
   if (filterCache.version !== version) {
     filterCache.players = [...new Set(rows.map(r => r.player))].sort();
     filterCache.reasons = [...new Set(rows.map(r => r.reason))].sort();
@@ -879,9 +720,9 @@ function buildSyphonBalMap() {
     const toVal = document.getElementById('fDateTo').value;
     const sq = document.getElementById('fSearch').value.toLowerCase();
 
-    // Precompute time values to avoid repeated parsing
-    const fromTime = fromVal ? new Date(fromVal.replace('T', ' ') + ':00').getTime() : 0;
-    const toTime = toVal ? new Date(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59').getTime() : 0;
+    // Precompute time values at midnight for consistent date comparison
+    const fromTime = fromVal ? getTimestamp(fromVal.replace('T', ' ')) : 0;
+    const toTime = toVal ? getTimestamp(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59') : 0;
 
     // Single pass filter instead of multiple .filter() chains
     const data = [];
@@ -972,159 +813,6 @@ function buildSyphonBalMap() {
    updateBulkBar();
  }
 
-// ==================== SYPHON FILTERS & TABLE ====================
-function updateSyphonFilters() {
-  const version = syphonRows.length;
-  if (syphonFilterCache.version !== version) {
-    syphonFilterCache.players = [...new Set(syphonRows.map(r => r.player))].sort();
-    syphonFilterCache.reasons = [...new Set(syphonRows.map(r => r.reason))].sort();
-    syphonFilterCache.version = version;
-  }
-  const fp = document.getElementById('syphonFPlayer'), fr = document.getElementById('syphonFReason');
-  const pv = fp.value, rv = fr.value;
-  fp.innerHTML = '<option value="">All</option>' + syphonFilterCache.players.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
-  fr.innerHTML = '<option value="">All</option>' + syphonFilterCache.reasons.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
-  fp.value = pv; fr.value = rv;
-}
-
-function getSyphonFilteredRows() {
-  const fp = document.getElementById('syphonFPlayer').value;
-  const fr = document.getElementById('syphonFReason').value;
-  const fromVal = document.getElementById('syphonFDateFrom').value;
-  const toVal = document.getElementById('syphonFDateTo').value;
-  const sq = document.getElementById('syphonFSearch').value.toLowerCase();
-
-  const fromTime = fromVal ? new Date(fromVal.replace('T', ' ') + ':00').getTime() : 0;
-  const toTime = toVal ? new Date(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59').getTime() : 0;
-
-  const data = [];
-  for (let i = 0; i < syphonRows.length; i++) {
-    const r = syphonRows[i];
-    if (fp && r.player !== fp) continue;
-    if (fr && r.reason !== fr) continue;
-    if (fromTime && getTimestamp(r.date) < fromTime) continue;
-    if (toTime && getTimestamp(r.date) > toTime) continue;
-    if (sq) {
-      const playerMatch = r.playerLc || r.player.toLowerCase();
-      const reasonMatch = r.reasonLc || r.reason.toLowerCase();
-      if (!playerMatch.includes(sq) && !reasonMatch.includes(sq) && !r.date.includes(sq)) continue;
-    }
-    data.push(r);
-  }
-  return data;
-}
-
-function renderSyphonTable() {
-  if (!syphonBalMapCache) syphonBalMapCache = buildSyphonBalMap();
-  let data = getSyphonFilteredRows();
-
-  const rowIndexMap = new Map();
-  syphonRows.forEach((row, index) => {
-    rowIndexMap.set(row.id, index);
-  });
-
-  data.sort((a, b) => {
-    let va, vb;
-    switch (syphonCurrentSort.col) {
-      case 1: va = a.date; vb = b.date; break;
-      case 2: va = a.player; vb = b.player; break;
-      case 3: va = a.reason; vb = b.reason; break;
-      case 4: va = a.amount; vb = b.amount; break;
-      case 5: va = syphonBalMapCache[rowKey(a)]; vb = syphonBalMapCache[rowKey(b)]; break;
-      default: va = a.date; vb = b.date;
-    }
-    if (typeof va === 'number' && typeof vb === 'number') {
-      return syphonCurrentSort.dir === 'asc' ? va - vb : vb - va;
-    }
-    return syphonCurrentSort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-  });
-
-  const total = data.length;
-  const totalPages = Math.max(1, Math.ceil(total / syphonRowsPerPage));
-  if (syphonCurrentPage > totalPages) syphonCurrentPage = totalPages;
-  const start = (syphonCurrentPage - 1) * syphonRowsPerPage;
-  const pageData = data.slice(start, start + syphonRowsPerPage);
-
-  document.getElementById('syphon-tbl-badge').textContent = syphonRows.length + ' rows';
-  const tbody = document.getElementById('syphonTblBody');
-  if (!total) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">Tidak ada data yang cocok</td></tr>';
-    document.getElementById('syphonPagination').className = 'pagination hidden';
-    return;
-  }
-  tbody.innerHTML = pageData.map((r, i) => {
-    const bal = syphonBalMapCache[rowKey(r)] ?? '';
-    const checked = syphonSelectedIds.has(r.id) ? 'checked' : '';
-    const globalIdx = (rowIndexMap.get(r.id) !== undefined ? rowIndexMap.get(r.id) + 1 : start + i + 1);
-    return '<tr>' +
-      '<td class="cb-cell"><input type="checkbox" ' + checked + ' onchange="toggleSyphonSelect(\'' + r.id + '\', this)"></td>' +
-      '<td style="color:#aaa;font-size:11px">' + globalIdx + '</td>' +
-      '<td style="font-size:12px">' + escHtml(r.date) + '</td>' +
-      '<td style="font-weight:600">' + escHtml(r.player) + '</td>' +
-      '<td><span class="pill pill-oth">' + escHtml(r.reason) + '</span></td>' +
-      '<td class="' + (r.amount>=0?'amount-pos':'amount-neg') + '">' + fmt(r.amount) + '</td>' +
-      '<td style="font-weight:600;font-size:12px">' + fmt(bal) + '</td>' +
-      '<td class="action-btns">' +
-        '<span onclick="editSyphonTransaction(\'' + r.id + '\')" title="Edit">✏️</span>' +
-        '<span onclick="deleteSyphonTransaction(\'' + r.id + '\')" title="Delete">🗑️</span>' +
-      '</td>' +
-    '</tr>';
-  }).join('');
-  renderSyphonPagination(total, totalPages, start);
-  updateSyphonBulkBar();
-}
-
-function renderSyphonPagination(total, totalPages, start) {
-  const container = document.getElementById('syphonPagination');
-  if (totalPages <= 1) {
-    container.className = 'pagination hidden';
-    return;
-  }
-  container.className = 'pagination';
-  const from = start + 1;
-  const to = Math.min(start + syphonRowsPerPage, total);
-  var html = '<span class="page-info">' + from + '-' + to + ' dari ' + total + ' syphon</span>';
-  html += '<div class="page-btns">';
-  html += '<button onclick="syphonGoPage(' + (syphonCurrentPage - 1) + ')" ' + (syphonCurrentPage <= 1 ? 'disabled' : '') + '>‹</button>';
-  var maxVisible = 7;
-  var startPage = Math.max(1, syphonCurrentPage - Math.floor(maxVisible / 2));
-  var endPage = Math.min(totalPages, startPage + maxVisible - 1);
-  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
-  if (startPage > 1) {
-    html += '<button onclick="syphonGoPage(1)">1</button>';
-    if (startPage > 2) html += '<span style="padding:0 4px;color:#94a3b8">…</span>';
-  }
-  for (var p = startPage; p <= endPage; p++) {
-    html += '<button onclick="syphonGoPage(' + p + ')" class="' + (p === syphonCurrentPage ? 'active' : '') + '">' + p + '</button>';
-  }
-  if (endPage < totalPages) {
-    if (endPage < totalPages - 1) html += '<span style="padding:0 4px;color:#94a3b8">…</span>';
-    html += '<button onclick="syphonGoPage(' + totalPages + ')">' + totalPages + '</button>';
-  }
-  html += '<button onclick="syphonGoPage(' + (syphonCurrentPage + 1) + ')" ' + (syphonCurrentPage >= totalPages ? 'disabled' : '') + '>›</button>';
-  html += '<select onchange="changeSyphonRPP(this.value)" style="margin-left:8px">';
-  [25, 50, 100, 250, 500].forEach(function(n) {
-    html += '<option value="' + n + '" ' + (n === syphonRowsPerPage ? 'selected' : '') + '>' + n + '/hal</option>';
-  });
-  html += '</select></div>';
-  container.innerHTML = html;
-}
-
-function syphonGoPage(p) {
-  var data = getSyphonFilteredRows();
-  var totalPages = Math.max(1, Math.ceil(data.length / syphonRowsPerPage));
-  if (p < 1 || p > totalPages) return;
-  syphonCurrentPage = p;
-  renderSyphonTable();
-  document.querySelector('.tbl-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function changeSyphonRPP(n) {
-  syphonRowsPerPage = parseInt(n);
-  syphonCurrentPage = 1;
-  renderSyphonTable();
-}
-
 function renderPagination(total, totalPages, start) {
   const container = document.getElementById('pagination');
   if (totalPages <= 1) {
@@ -1171,7 +859,7 @@ function goPage(p) {
 }
 
 function changeRPP(n) {
-  rowsPerPage = parseInt(n);
+  rowsPerPage = parseInt(n, 10);
   currentPage = 1;
   renderTable();
 }
@@ -1393,275 +1081,6 @@ function quickEditTag(id) {
   refreshAll();
 }
 
-// ==================== SYPHON CRUD ====================
-function deleteSyphonTransaction(id) {
-  if (!confirm('🗑️ Hapus syphon ini secara permanen?')) return;
-  const tx = syphonRows.find(r => r.id === id);
-  if (!tx) return;
-  const index = syphonRows.indexOf(tx);
-  syphonLastDeleted = { ...tx, _originalIndex: index };
-  syphonExistingKeysCache.delete(rowKey(tx));
-  syphonDirtyIds.deleted.add(tx.id);
-  syphonRows = syphonRows.filter(r => r.id !== id);
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  saveSyphonToStorage();
-  refreshSyphon();
-  showSyphonUndoToast();
-}
-
-function showSyphonUndoToast() {
-  const toast = document.getElementById('undoToast');
-  document.getElementById('undoToastText').innerHTML = `Syphon dihapus. <strong>Undo?</strong>`;
-  toast.style.display = 'flex';
-  toast.classList.add('show');
-  if (undoTimeout) clearTimeout(undoTimeout);
-  undoTimeout = setTimeout(() => hideToast('undoToast'), 5000);
-}
-
-function undoSyphon() {
-  if (syphonLastDeleted) {
-    if (!syphonLastDeleted.playerLc) syphonLastDeleted.playerLc = syphonLastDeleted.player.toLowerCase();
-    if (!syphonLastDeleted.reasonLc) syphonLastDeleted.reasonLc = syphonLastDeleted.reason.toLowerCase();
-    const index = syphonLastDeleted._originalIndex;
-    if (index !== undefined && index >= 0 && index <= syphonRows.length) {
-      syphonRows.splice(index, 0, syphonLastDeleted);
-    } else {
-      syphonRows.push(syphonLastDeleted);
-    }
-    syphonExistingKeysCache.add(rowKey(syphonLastDeleted));
-    syphonDirtyIds.deleted.delete(syphonLastDeleted.id);
-    syphonLastDeleted = null;
-  } else if (syphonLastBulkDeleted && syphonLastBulkDeleted.length > 0) {
-    syphonLastBulkDeleted.forEach(r => {
-      if (!r.playerLc) r.playerLc = r.player.toLowerCase();
-      if (!r.reasonLc) r.reasonLc = r.reason.toLowerCase();
-    });
-    syphonRows = syphonRows.concat(syphonLastBulkDeleted);
-    syphonLastBulkDeleted.forEach(r => {
-      syphonExistingKeysCache.add(rowKey(r));
-      syphonDirtyIds.deleted.delete(r.id);
-    });
-    syphonLastBulkDeleted = null;
-  } else {
-    return;
-  }
-  hideToast('dlToast');
-  if (undoTimeout) clearTimeout(undoTimeout);
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  saveSyphonToStorage();
-  refreshSyphon();
-}
-
-function editSyphonTransaction(id) {
-  const tx = syphonRows.find(r => r.id === id);
-  if (!tx) return;
-  syphonEditingId = id;
-  document.getElementById('syphonEditDate').value = tx.date.replace(' ', 'T').substring(0, 16);
-  document.getElementById('syphonEditPlayer').value = tx.player;
-  document.getElementById('syphonEditReason').value = tx.reason;
-  document.getElementById('syphonEditAmount').value = tx.amount;
-  document.getElementById('syphonEditModal').style.display = 'flex';
-}
-
-function saveSyphonEdit() {
-  if (!syphonEditingId) return;
-  const tx = syphonRows.find(r => r.id === syphonEditingId);
-  if (!tx) return;
-  const newDate = document.getElementById('syphonEditDate').value.trim().replace('T', ' ');
-  const newPlayer = document.getElementById('syphonEditPlayer').value.trim();
-  const newReason = document.getElementById('syphonEditReason').value.trim();
-  const newAmount = document.getElementById('syphonEditAmount').value;
-  const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
-  if (!newDate) return showSyphonEditError('Tanggal tidak boleh kosong!');
-  if (!newPlayer) return showSyphonEditError('Player name tidak boleh kosong!');
-  if (!newReason) return showSyphonEditError('Reason tidak boleh kosong!');
-  if (!isValidDate(dateStr)) return showSyphonEditError('Format tanggal tidak valid!');
-  if (newAmount === '' || newAmount === null || newAmount === undefined) return showSyphonEditError('Amount tidak boleh kosong!');
-  const amountNum = parseFloat(newAmount);
-  if (isNaN(amountNum)) return showSyphonEditError('Amount harus berupa angka!');
-  if (!isFinite(amountNum)) return showSyphonEditError('Amount tidak valid (Infinity)!');
-  if (Math.abs(amountNum) > 9e15) return showSyphonEditError('Amount terlalu besar!');
-  tx.date = dateStr;
-  tx.player = newPlayer;
-  tx.reason = newReason;
-  tx.amount = amountNum;
-  tx.playerLc = newPlayer.toLowerCase();
-  tx.reasonLc = newReason.toLowerCase();
-  closeSyphonModal();
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  saveSyphonToStorage();
-  refreshSyphon();
-}
-
-function showSyphonEditError(msg) {
-  const errEl = document.getElementById('syphonEditError');
-  errEl.textContent = '❌ ' + msg;
-  errEl.style.display = 'block';
-  setTimeout(() => { errEl.style.display = 'none'; }, 4000);
-}
-
-function closeSyphonModal() {
-  document.getElementById('syphonEditModal').style.display = 'none';
-  const errEl = document.getElementById('syphonEditError');
-  if (errEl) errEl.style.display = 'none';
-  syphonEditingId = null;
-}
-
-function openSyphonAddModal() {
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  document.getElementById('syphonAddDate').value = local;
-  document.getElementById('syphonAddPlayer').value = '';
-  document.getElementById('syphonAddReason').value = '';
-  document.getElementById('syphonAddAmount').value = '';
-  document.getElementById('syphonAddError').style.display = 'none';
-  document.getElementById('syphonAddModal').style.display = 'flex';
-}
-
-function closeSyphonAddModal() {
-  document.getElementById('syphonAddModal').style.display = 'none';
-  document.getElementById('syphonAddError').style.display = 'none';
-}
-
-function showSyphonAddError(msg) {
-  const errEl = document.getElementById('syphonAddError');
-  errEl.textContent = '❌ ' + msg;
-  errEl.style.display = 'block';
-  setTimeout(() => { errEl.style.display = 'none'; }, 4000);
-}
-
-function saveSyphonAdd() {
-  const newDate = document.getElementById('syphonAddDate').value.trim().replace('T', ' ');
-  const newPlayer = document.getElementById('syphonAddPlayer').value.trim();
-  const newReason = document.getElementById('syphonAddReason').value.trim();
-  const newAmount = document.getElementById('syphonAddAmount').value;
-  const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
-  if (!newDate) return showSyphonAddError('Tanggal tidak boleh kosong!');
-  if (!newPlayer) return showSyphonAddError('Player name tidak boleh kosong!');
-  if (!newReason) return showSyphonAddError('Reason tidak boleh kosong!');
-  if (!isValidDate(dateStr)) return showSyphonAddError('Format tanggal tidak valid!');
-  if (newAmount === '' || newAmount === null || newAmount === undefined) return showSyphonAddError('Amount tidak boleh kosong!');
-  const amountNum = parseFloat(newAmount);
-  if (isNaN(amountNum)) return showSyphonAddError('Amount harus berupa angka!');
-  if (!isFinite(amountNum)) return showSyphonAddError('Amount tidak valid (Infinity)!');
-  if (Math.abs(amountNum) > 9e15) return showSyphonAddError('Amount terlalu besar!');
-  const entry = { date: dateStr, player: newPlayer, reason: newReason, amount: amountNum, id: generateId(), playerLc: newPlayer.toLowerCase(), reasonLc: newReason.toLowerCase() };
-  syphonRows.push(entry);
-  syphonExistingKeysCache.add(rowKey(entry));
-  syphonDirtyIds.added.add(entry.id);
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  closeSyphonAddModal();
-  saveSyphonToStorage();
-  refreshSyphon();
-  const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').textContent = '✅ 1 syphon ditambahkan.';
-  toast.classList.add('show');
-  setTimeout(() => hideToast('dlToast'), 3000);
-}
-
-// ==================== SYPHON BULK OPERATIONS ====================
-function toggleSyphonSelect(id, checkbox) {
-  if (checkbox.checked) {
-    syphonSelectedIds.add(id);
-  } else {
-    syphonSelectedIds.delete(id);
-  }
-  updateSyphonBulkBar();
-}
-
-function syphonToggleSelectAll(checkbox) {
-  const data = getSyphonFilteredRows();
-  if (checkbox.checked) {
-    data.forEach(r => syphonSelectedIds.add(r.id));
-  } else {
-    data.forEach(r => syphonSelectedIds.delete(r.id));
-  }
-  updateSyphonBulkBar();
-  renderSyphonTable();
-}
-
-function syphonSelectAllVisible() {
-  const data = getSyphonFilteredRows();
-  data.forEach(r => syphonSelectedIds.add(r.id));
-  updateSyphonBulkBar();
-  renderSyphonTable();
-}
-
-function syphonClearSelection() {
-  syphonSelectedIds.clear();
-  updateSyphonBulkBar();
-  renderSyphonTable();
-}
-
-function updateSyphonBulkBar() {
-  const bulk = document.getElementById('syphonBulkBar');
-  if (syphonSelectedIds.size === 0) {
-    bulk.classList.remove('visible');
-  } else {
-    bulk.classList.add('visible');
-    document.getElementById('syphonBulkCountBar').textContent = syphonSelectedIds.size + ' dipilih';
-  }
-  document.getElementById('syphonSelectAllCb').checked = false;
-}
-
-function openSyphonBulkModal() {
-  if (syphonSelectedIds.size === 0) return;
-  document.getElementById('syphonBulkCount').textContent = syphonSelectedIds.size;
-  document.getElementById('syphonBulkModal').style.display = 'flex';
-}
-
-function closeSyphonBulkModal() {
-  document.getElementById('syphonBulkModal').style.display = 'none';
-}
-
-function confirmSyphonBulkDelete() {
-  if (syphonSelectedIds.size === 0) return closeSyphonBulkModal();
-  const toDelete = Array.from(syphonSelectedIds);
-  syphonLastBulkDeleted = syphonRows.filter(r => toDelete.includes(r.id)).map(r => Object.assign({}, r));
-  syphonRows = syphonRows.filter(r => !toDelete.includes(r.id));
-  syphonLastBulkDeleted.forEach(r => {
-    syphonExistingKeysCache.delete(rowKey(r));
-    syphonDirtyIds.deleted.add(r.id);
-  });
-  syphonSelectedIds.clear();
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  saveSyphonToStorage();
-  refreshSyphon();
-  closeSyphonBulkModal();
-  const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').innerHTML = `🗑 ${toDelete.length} syphon dihapus. <strong>Undo?</strong>`;
-  toast.classList.add('show');
-  if (undoTimeout) clearTimeout(undoTimeout);
-  undoTimeout = setTimeout(() => hideToast('dlToast'), 5000);
-}
-
-function syphonSortTable(col) {
-  if (syphonCurrentSort.col === col) {
-    syphonCurrentSort.dir = syphonCurrentSort.dir === 'asc' ? 'desc' : 'asc';
-  } else {
-    syphonCurrentSort.col = col;
-    syphonCurrentSort.dir = col === 1 ? 'desc' : 'asc';
-  }
-  syphonCurrentPage = 1;
-  renderSyphonTable();
-}
-
-function applySyphonSort(dir) {
-  syphonCurrentSort.dir = dir;
-  syphonCurrentPage = 1;
-  renderSyphonTable();
-}
-
 // ==================== PERIOD & MONTHLY ====================
   // Build weekly/daily period aggregation data
   function buildPeriodData() {
@@ -1768,247 +1187,6 @@ function renderMonthly() {
       <div class="month-row"><span class="month-row-label" style="font-weight:600">Saldo Akhir</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
     </div>`;
   }).join('');
-}
-
-// ==================== SYPHON SUMMARY & PERIOD ====================
-function buildSyphonPlayerSummary() {
-  const grouped = {};
-  syphonRows.forEach(r => {
-    if (!grouped[r.player]) {
-      grouped[r.player] = { player: r.player, deposits: 0, withdrawals: 0, count: 0 };
-    }
-    if (r.amount > 0) {
-      grouped[r.player].deposits += r.amount;
-    } else {
-      grouped[r.player].withdrawals += Math.abs(r.amount);
-    }
-    grouped[r.player].count++;
-  });
-  return grouped;
-}
-
-function renderSyphonPlayerSummary() {
-  const grouped = buildSyphonPlayerSummary();
-  const players = Object.keys(grouped).sort();
-  const container = document.getElementById('syphonPlayerSummaryGrid');
-  if (!players.length) {
-    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
-    return;
-  }
-  container.innerHTML = players.map(p => {
-    const player = grouped[p];
-    const diff = player.deposits - player.withdrawals;
-    const diffCls = diff >= 0 ? 'green' : 'red';
-    return `<div class="month-card">
-      <div class="month-label">👤 ${escHtml(player.player)}</div>
-      <div class="month-rows">
-        <div class="month-row"><span class="month-row-label">Total Deposit</span><span class="month-row-val green">+${fmt(player.deposits)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Withdrawal</span><span class="month-row-val red">-${fmt(player.withdrawals)}</span></div>
-        <div class="month-row"><span class="month-row-label">Jumlah Transaksi</span><span class="month-row-val">${player.count}</span></div>
-      </div>
-      <hr class="month-divider">
-      <div class="month-row"><span class="month-row-label" style="font-weight:600">Selisih</span><span class="month-row-val ${diffCls}">${diff >= 0 ? '+' : ''}${fmt(diff)}</span></div>
-    </div>`;
-  }).join('');
-}
-
-function buildSyphonPeriodData() {
-  const grouped = {};
-  const sorted = syphonSortedRowsCache && syphonSortedRowsCache.length === syphonRows.length
-    ? [...syphonSortedRowsCache].reverse()
-    : [...syphonRows].sort((a,b) => b.date.localeCompare(a.date));
-  sorted.forEach(r => {
-    const ymd = r.date.substring(0,10);
-    const ym = r.date.substring(0,7);
-    const week = getWeekOfMonth(r.date);
-    const weekKey = ym + '-W' + week;
-    if (!grouped[weekKey]) grouped[weekKey] = { ym, week, net:0, dep:0, wit:0, days:{} };
-    if (!grouped[weekKey].days[ymd]) grouped[weekKey].days[ymd] = { net:0, dep:0, wit:0 };
-    grouped[weekKey].net += r.amount;
-    grouped[weekKey].days[ymd].net += r.amount;
-    if (r.amount > 0) {
-      grouped[weekKey].dep += r.amount;
-      grouped[weekKey].days[ymd].dep += r.amount;
-    } else {
-      grouped[weekKey].wit += r.amount;
-      grouped[weekKey].days[ymd].wit += r.amount;
-    }
-  });
-  return grouped;
-}
-
-function renderSyphonPeriod() {
-  const grouped = buildSyphonPeriodData();
-  const container = document.getElementById('syphonPeriodGrid');
-  const keys = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
-  if (!keys.length) {
-    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
-    return;
-  }
-  container.innerHTML = keys.map(k => {
-    const w = grouped[k];
-    const dayKeys = Object.keys(w.days).sort((a,b) => b.localeCompare(a));
-    const daysHtml = dayKeys.map(d => {
-      const dayData = w.days[d];
-      const netCls = dayData.net >= 0 ? 'green' : 'red';
-      return `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px dashed #eee;">
-          <span>📅 ${d}</span>
-          <span class="${netCls}" style="font-weight:600">${dayData.net >= 0 ? '+' : ''}${fmt(dayData.net)}</span>
-      </div>`;
-    }).join('');
-    const wNetCls = w.net >= 0 ? 'green' : 'red';
-    return `<div class="month-card">
-      <div class="month-label">Bulan ${w.ym} - Minggu ${w.week}</div>
-      <div class="month-rows" style="margin-bottom:8px">
-        <div class="month-row"><span class="month-row-label">Total Masuk</span><span class="month-row-val green">+${fmt(w.dep)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Keluar</span><span class="month-row-val red">${fmt(w.wit)}</span></div>
-        <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">Net Minggu Ini</span><span class="month-row-val ${wNetCls}" style="font-size:13px">${w.net >= 0 ? '+' : ''}${fmt(w.net)}</span></div>
-      </div>
-      <div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px;margin-top:8px">Rincian Harian:</div>
-      ${daysHtml}
-    </div>`;
-  }).join('');
-}
-
-// ==================== SYPHON MONTHLY DATA ====================
-function buildSyphonMonthlyData() {
-  const sorted = syphonSortedRowsCache && syphonSortedRowsCache.length === syphonRows.length
-    ? syphonSortedRowsCache
-    : [...syphonRows].sort((a,b) => a.date.localeCompare(b.date));
-  const monthOrder = [], monthMap = {};
-  let run = 0;
-  sorted.forEach(r => {
-    const ym = r.date.substring(0,7);
-    if (!monthMap[ym]) {
-      monthMap[ym] = {ym, openBal: run, dep:0, wit:0, count:0, closeBal:run};
-      monthOrder.push(ym);
-    }
-    run += r.amount;
-    if (r.amount > 0) monthMap[ym].dep += r.amount; else monthMap[ym].wit += r.amount;
-    monthMap[ym].count++;
-    monthMap[ym].closeBal = run;
-  });
-  return {monthOrder, monthMap};
-}
-
-function renderSyphonMonthly() {
-  const {monthOrder, monthMap} = buildSyphonMonthlyData();
-  const grid = document.getElementById('syphonMonthlyGrid');
-  if (!monthOrder.length) {
-    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
-    return;
-  }
-  grid.innerHTML = monthOrder.map(ym => {
-    const m = monthMap[ym];
-    const net = m.dep + m.wit;
-    const netCls = net >= 0 ? 'green' : 'red';
-    return `<div class="month-card">
-      <div class="month-label">📅 ${monthLabel(ym)}<span class="month-cnt">${m.count} transaksi</span></div>
-      <div class="month-rows">
-        <div class="month-row"><span class="month-row-label">Saldo Awal (Tgl 1)</span><span class="month-row-val">${fmt(m.openBal)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Masuk</span><span class="month-row-val green">+${fmt(m.dep)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Keluar</span><span class="month-row-val red">${fmt(m.wit)}</span></div>
-        <div class="month-row"><span class="month-row-label">Net Bulan Ini</span><span class="month-row-val ${netCls}">${net>=0?'+':''}${fmt(net)}</span></div>
-      </div>
-      <hr class="month-divider">
-      <div class="month-row"><span class="month-row-label" style="font-weight:600">Saldo Akhir</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
-    </div>`;
-  }).join('');
-}
-
-// ==================== SYPHON CHART ====================
-function renderSyphonChart() {
-  const container = document.getElementById('syphonChartContainer');
-  const {monthOrder, monthMap} = buildSyphonMonthlyData();
-  if (!monthOrder.length) {
-    container.innerHTML = '<div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
-    return;
-  }
-  const type = document.getElementById('syphonChartType').value;
-  const metric = document.getElementById('syphonChartMetric').value;
-  const labels = monthOrder.map(ym => monthLabel(ym));
-  const values = monthOrder.map(ym => {
-    const m = monthMap[ym];
-    if (metric === 'net') return m.dep + m.wit;
-    if (metric === 'dep') return m.dep;
-    if (metric === 'wit') return Math.abs(m.wit);
-    if (metric === 'count') return m.count;
-    return 0;
-  });
-  const maxVal = Math.max.apply(null, values.concat([1]));
-  const minVal = Math.min.apply(null, values);
-  const hasNeg = minVal < 0;
-  const chartH = 220;
-  const padL = 60, padR = 10, padT = 10, padB = 50;
-  const W = Math.max(600, labels.length * 80);
-  const chartW = W - padL - padR;
-  const chartH2 = chartH - padT - padB;
-  const zeroY = hasNeg ? padT + chartH2 / 2 : padT + chartH2;
-  const scaleH = hasNeg ? chartH2 / 2 : chartH2;
-
-  let svg = '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + chartH + '" xmlns="http://www.w3.org/2000/svg">';
-
-  var steps = 4;
-  for (var i = 0; i <= steps; i++) {
-    var y = padT + (chartH2 / steps) * i;
-    var val = hasNeg ? maxVal - (maxVal - minVal) * (i / steps) : maxVal * (1 - i / steps);
-    svg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#e2e8f0" stroke-width="1"/>';
-    svg += '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="9" fill="#94a3b8">' + shortNum(val) + '</text>';
-  }
-  if (hasNeg) {
-    svg += '<line x1="' + padL + '" y1="' + zeroY + '" x2="' + (W - padR) + '" y2="' + zeroY + '" stroke="#94a3b8" stroke-width="1.5"/>';
-  }
-
-  var barW = Math.min(40, (chartW / labels.length) * 0.6);
-  var gap = chartW / labels.length;
-
-  if (type === 'bar' || type === 'both') {
-    for (var j = 0; j < values.length; j++) {
-      var x = padL + gap * j + (gap - barW) / 2;
-      var v = values[j];
-      var barH = (Math.abs(v) / (hasNeg ? Math.max(maxVal, Math.abs(minVal)) : maxVal)) * scaleH;
-      var barY = v >= 0 ? zeroY - barH : zeroY;
-      var color = v >= 0 ? '#1D9E75' : '#D85A30';
-      svg += '<rect x="' + x + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="3" opacity="0.85">';
-      svg += '<title>' + labels[j] + ': ' + fmt(v) + '</title></rect>';
-    }
-  }
-
-  if (type === 'line' || type === 'both') {
-    var pts = [];
-    for (var k = 0; k < values.length; k++) {
-      var px = padL + gap * k + gap / 2;
-      var py = zeroY - (values[k] / (hasNeg ? Math.max(maxVal, Math.abs(minVal)) : maxVal)) * scaleH;
-      pts.push({ x: px, y: py, v: values[k], label: labels[k] });
-    }
-    if (pts.length > 1) {
-      var pathD = pts.map(function(p, i) { return (i === 0 ? 'M' : 'L') + p.x + ' ' + p.y; }).join(' ');
-      svg += '<path d="' + pathD + '" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>';
-    }
-    pts.forEach(function(p) {
-      svg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="4" fill="#8b5cf6" stroke="#fff" stroke-width="1.5">';
-      svg += '<title>' + p.label + ': ' + fmt(p.v) + '</title></circle>';
-    });
-  }
-
-  for (var l = 0; l < labels.length; l++) {
-    var lx = padL + gap * l + gap / 2;
-    svg += '<text x="' + lx + '" y="' + (chartH - 4) + '" text-anchor="middle" font-size="9" fill="#64748b" transform="rotate(-30,' + lx + ',' + (chartH - 4) + ')">' + labels[l] + '</text>';
-  }
-
-  svg += '</svg>';
-
-  var legend = '<div class="chart-legend">';
-  if (type === 'bar' || type === 'both') {
-    legend += '<span><span class="dot" style="background:#1D9E75"></span> Positif</span>';
-    legend += '<span><span class="dot" style="background:#D85A30"></span> Negatif</span>';
-  }
-  if (type === 'line' || type === 'both') {
-    legend += '<span><span class="dot" style="background:#8b5cf6"></span> Trend</span>';
-  }
-  legend += '</div>';
-
-  container.innerHTML = '<div class="chart-wrap">' + svg + '<div class="chart-tooltip" id="syphonChartTip"></div></div>' + legend;
 }
 
 // ==================== CHART ====================
@@ -2146,6 +1324,9 @@ function applySortClasses() {
 
 // ==================== DOWNLOAD EXCEL ====================
 function autoDownloadExcel() {
+  if (typeof XLSX === 'undefined') {
+    return alert('⚠️ Library XLSX (SheetJS) belum dimuat. Pastikan koneksi internet tersedia.\n\nAlternatif: Export CSV.');
+  }
   showLoading('Membuat Excel...');
   setTimeout(() => {
     const wb = XLSX.utils.book_new();
@@ -2237,6 +1418,9 @@ function exportCSV() {
 }
 
 function exportPDF() {
+  if (typeof XLSX === 'undefined') {
+    return alert('⚠️ Library XLSX (SheetJS) belum dimuat. Pastikan koneksi internet tersedia.');
+  }
   if (!rows.length) return alert('Tidak ada data');
   const filtered = getFilteredRows();
   const exportRows = filtered.length > 0 ? filtered : rows;
@@ -2296,173 +1480,11 @@ function exportPDF() {
   win.onload = function() { win.print(); };
 }
 
-// ==================== SYPHON EXPORT ====================
-function autoDownloadSyphonExcel() {
-  showLoading('Membuat Excel Syphon...');
-  setTimeout(() => {
-    const wb = XLSX.utils.book_new();
-    const filtered = getSyphonFilteredRows();
-    const exportRows = filtered.length > 0 ? filtered : syphonRows;
-    const balMap = syphonBalMapCache || buildSyphonBalMap();
-    const sorted = [...exportRows].sort((a,b) => a.date.localeCompare(b.date));
-    const txAoa = [['#','Date & Time','Player','Reason','Amount','Running Balance']];
-    sorted.forEach((r,i) => txAoa.push([i+1, r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? '']));
-    const ws1 = XLSX.utils.aoa_to_sheet(txAoa);
-    ws1['!cols'] = [{wch:5},{wch:22},{wch:16},{wch:14},{wch:14},{wch:18}];
-    XLSX.utils.book_append_sheet(wb, ws1, 'Log Syphon');
-
-    const periodData = buildSyphonPeriodData();
-    const pKeys = Object.keys(periodData).sort((a,b) => b.localeCompare(a));
-    const pAoa = [['Bulan - Minggu','Tanggal / Periode','Total Masuk','Total Keluar','Net']];
-    pKeys.forEach(k => {
-      const w = periodData[k];
-      pAoa.push([`Bulan ${w.ym} - Minggu ${w.week}`, 'Mingguan', w.dep, w.wit, w.net]);
-      const dKeys = Object.keys(w.days).sort((a,b)=>b.localeCompare(a));
-      dKeys.forEach(d => {
-        const dayData = w.days[d];
-        pAoa.push(['', d, dayData.dep, dayData.wit, dayData.net]);
-      });
-    });
-    const wsP = XLSX.utils.aoa_to_sheet(pAoa);
-    wsP['!cols'] = [{wch:25},{wch:18},{wch:15},{wch:15},{wch:15}];
-    XLSX.utils.book_append_sheet(wb, wsP, 'Rekap Mingguan & Harian');
-
-    const {monthOrder, monthMap} = buildSyphonMonthlyData();
-    const mAoa = [['Bulan','Saldo Awal (Tgl 1)','Total Masuk','Total Keluar','Net','Saldo Akhir','Jumlah Transaksi']];
-    monthOrder.forEach(ym => {
-      const m = monthMap[ym];
-      mAoa.push([monthLabel(ym), m.openBal, m.dep, m.wit, m.dep+m.wit, m.closeBal, m.count]);
-    });
-    const totalDep = monthOrder.reduce((s,ym) => s + monthMap[ym].dep, 0);
-    const totalWit = monthOrder.reduce((s,ym) => s + monthMap[ym].wit, 0);
-    mAoa.push(['TOTAL','',''+totalDep,''+totalWit,''+(totalDep+totalWit),'',''+syphonRows.length]);
-    const ws2 = XLSX.utils.aoa_to_sheet(mAoa);
-    ws2['!cols'] = [{wch:12},{wch:20},{wch:16},{wch:16},{wch:14},{wch:16},{wch:18}];
-    XLSX.utils.book_append_sheet(wb, ws2, 'Rekap Bulanan');
-
-    const now = new Date();
-    const ws3 = XLSX.utils.aoa_to_sheet([
-      ['Guild Syphon — Albion Online ' + APP_VERSION],
-      ['Generated', now.toLocaleString('id-ID')],
-      ['Total Transaksi', syphonRows.length],
-      ['Filtered', filtered.length > 0 ? filtered.length : syphonRows.length],
-      ['Current Balance', syphonRows.reduce((s,r) => s + r.amount, 0)]
-    ]);
-    XLSX.utils.book_append_sheet(wb, ws3, 'Info');
-
-    const ts = now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
-    const suffix = filtered.length > 0 && filtered.length < syphonRows.length ? '_filtered' : '';
-    const fname = `guild_syphon${suffix}_${ts}.xlsx`;
-    XLSX.writeFile(wb, fname);
-
-    hideLoading();
-    const toast = document.getElementById('dlToast');
-    document.getElementById('dlToastText').textContent = `${fname} terunduh! (${exportRows.length} tx)`;
-    toast.classList.add('show');
-    setTimeout(() => hideToast('dlToast'), 3500);
-  }, 50);
-}
-
-function exportSyphonCSV() {
-  if (!syphonRows.length) return alert('Tidak ada data');
-  const filtered = getSyphonFilteredRows();
-  const exportRows = filtered.length > 0 ? filtered : syphonRows;
-  const balMap = syphonBalMapCache || buildSyphonBalMap();
-  const csvContent = [
-    ['Date & Time','Player','Reason','Amount','Running Balance'],
-    ...exportRows.map(r => [r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? ''])
-  ].map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `guild_syphon${filtered.length > 0 && filtered.length < syphonRows.length ? '_filtered' : ''}_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-  const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').innerHTML = `✅ CSV berhasil diunduh! (${exportRows.length} tx)`;
-  toast.classList.add('show');
-  setTimeout(() => hideToast('dlToast'), 3000);
-}
-
-function exportSyphonPDF() {
-  if (!syphonRows.length) return alert('Tidak ada data');
-  const filtered = getSyphonFilteredRows();
-  const exportRows = filtered.length > 0 ? filtered : syphonRows;
-  const balMap = syphonBalMapCache || buildSyphonBalMap();
-  const sorted = [...exportRows].sort((a, b => a.date.localeCompare(b.date)));
-  const totalDep = exportRows.reduce((s, r) => s + (r.amount > 0 ? r.amount : 0), 0);
-  const totalWit = exportRows.reduce((s, r) => s + (r.amount < 0 ? r.amount : 0), 0);
-  const net = totalDep + totalWit;
-
-  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Guild Syphon Report</title>';
-  html += '<style>';
-  html += '@page{margin:1.5cm}';
-  html += 'body{font-family:Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:0}';
-  html += '.rpt-header{text-align:center;border-bottom:2px solid #8b5cf6;padding-bottom:10px;margin-bottom:16px}';
-  html += '.rpt-header h1{font-size:16px;color:#8b5cf6;margin:0}';
-  html += '.rpt-header p{font-size:10px;color:#64748b;margin:4px 0 0}';
-  html += '.rpt-summary{display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap}';
-  html += '.rpt-stat{flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px}';
-  html += '.rpt-stat-label{font-size:9px;color:#94a3b8;text-transform:uppercase}';
-  html += '.rpt-stat-value{font-size:14px;font-weight:700}';
-  html += '.green{color:#1D9E75}.red{color:#D85A30}.amber{color:#BA7517}';
-  html += 'table{width:100%;border-collapse:collapse;margin-bottom:16px}';
-  html += 'th{background:#f1f5f9;text-align:left;padding:6px 8px;font-size:9px;color:#64748b;border-bottom:1px solid #e2e8f0}';
-  html += 'td{padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:10px}';
-  html += 'tr:nth-child(even){background:#fafafa}';
-  html += '.amount-pos{color:#1D9E75;font-weight:600}.amount-neg{color:#D85A30;font-weight:600}';
-  html += '.rpt-footer{font-size:9px;color:#94a3b8;text-align:center;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:8px}';
-  html += '</style></head><body>';
-
-  html += '<div class="rpt-header"><h1>Guild Syphon — Albion Online</h1>';
-  html += '<p>Laporan: ' + new Date().toLocaleString('id-ID') + ' | ' + sorted.length + ' transaksi</p></div>';
-
-  html += '<div class="rpt-summary">';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Masuk</div><div class="rpt-stat-value green">+' + fmt(totalDep) + '</div></div>';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Keluar</div><div class="rpt-stat-value red">' + fmt(totalWit) + '</div></div>';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Net</div><div class="rpt-stat-value ' + (net >= 0 ? 'green' : 'red') + '">' + (net >= 0 ? '+' : '') + fmt(net) + '</div></div>';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Saldo Akhir</div><div class="rpt-stat-value amber">' + fmt(net) + '</div></div>';
-  html += '</div>';
-
-  html += '<table><thead><tr><th>#</th><th>Tanggal</th><th>Player</th><th>Reason</th><th>Amount</th><th>Balance</th></tr></thead><tbody>';
-  sorted.forEach(function(r, i) {
-    var bal = balMap[rowKey(r)] ?? '';
-    var cls = r.amount >= 0 ? 'amount-pos' : 'amount-neg';
-    html += '<tr><td>' + (i + 1) + '</td><td>' + escHtml(r.date) + '</td><td>' + escHtml(r.player) + '</td><td>' + escHtml(r.reason) + '</td><td class="' + cls + '">' + fmt(r.amount) + '</td><td>' + fmt(bal) + '</td></tr>';
-  });
-  html += '</tbody></table>';
-
-  html += '<div class="rpt-footer">Guild Syphon V8.0 — Generated ' + new Date().toLocaleString('id-ID') + '</div>';
-  html += '</body></html>';
-
-  var win = window.open('', '_blank');
-  if (!win) return alert('⚠️ Pop-up diblokir. Izinkan pop-up untuk export PDF.');
-  win.document.write(html);
-  win.document.close();
-  win.onload = function() { win.print(); };
-}
-
-function updateSyphonDownloadBtn() {
-  const btn = document.getElementById('syphonDlBtn');
-  const has = syphonRows.length > 0;
-  btn.disabled = !has;
-  btn.style.opacity = has ? '1' : '0.4';
-  btn.style.cursor = has ? 'pointer' : 'not-allowed';
-}
-
 // ==================== TAB SWITCH ====================
 function switchTab(n) {
   document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === n));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   const panel = document.getElementById('tab-' + n);
-  if (panel) panel.classList.add('active');
-}
-
-function switchSyphonTab(n) {
-  document.querySelectorAll('.syphon-tab-btn').forEach((b, i) => b.classList.toggle('active', i === n));
-  document.querySelectorAll('.syphon-tab-panel').forEach(p => p.classList.remove('active'));
-  const panel = document.getElementById('syphon-tab-' + n);
   if (panel) panel.classList.add('active');
 }
 
@@ -2534,9 +1556,11 @@ function confirmBulkDelete() {
    saveToStorage();
    refreshAll();
   const toast = document.getElementById('undoToast');
-  document.getElementById('undoToastText').innerHTML = `🗑 ${count} transaksi dihapus. <strong>Undo?</strong>`;
-  toast.style.display = 'flex';
-  toast.classList.add('show');
+  if (toast) {
+    safeSet('undoToastText', 'innerHTML', `🗑 ${count} transaksi dihapus. <strong>Undo?</strong>`);
+    toast.style.display = 'flex';
+    toast.classList.add('show');
+  }
   if (undoTimeout) clearTimeout(undoTimeout);
   undoTimeout = setTimeout(() => hideToast('undoToast'), 8000);
 }
@@ -2545,12 +1569,12 @@ function confirmBulkDelete() {
 function resetAll() {
   if (rows.length === 0) {
     rows = [];
-    document.getElementById('logInput').value = '';
-    document.getElementById('excelFile').value = '';
-    document.getElementById('uploadZone').className = 'upload-zone';
-    document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
-    document.getElementById('dupNotice').style.display = 'none';
-    document.getElementById('okNotice').className = '';
+    safeSet('logInput', 'value', '');
+    safeSet('excelFile', 'value', '');
+    safeSet('uploadZone', 'className', 'upload-zone');
+    safeSet('uploadZoneText', 'innerHTML', '📂 Klik atau drag &amp; drop file Excel / JSON di sini');
+    safeSet('dupNotice', 'style.display', 'none');
+    safeSet('okNotice', 'className', '');
     balMapCache = null;
     sortedRowsCache = null;
     statsCache = null;
@@ -2589,12 +1613,8 @@ async function confirmReset() {
    existingKeysCache.clear();
    rows = [];
    selectedIds.clear();
-   syphonRows = [];
-   syphonSelectedIds.clear();
    document.getElementById('selectAllCb').checked = false;
-   document.getElementById('syphonSelectAllCb').checked = false;
    document.getElementById('logInput').value = '';
-   document.getElementById('syphonLogInput').value = '';
    document.getElementById('excelFile').value = '';
    document.getElementById('uploadZone').className = 'upload-zone';
    document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
@@ -2604,15 +1624,9 @@ async function confirmReset() {
    balMapCache = null;
    sortedRowsCache = null;
    statsCache = null;
-   syphonBalMapCache = null;
-   syphonSortedRowsCache = null;
-   syphonStatsCache = null;
    filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
-   syphonFilterCache = { players: null, reasons: null, version: -1 };
    saveToStorage();
-   saveSyphonToStorage();
    refreshAll();
-   refreshSyphon();
   hideLoading();
   const toast = document.getElementById('dlToast');
   document.getElementById('dlToastText').textContent = '✅ Data direset. Backup telah diunduh.';
@@ -2668,24 +1682,12 @@ function hideLoading() {
 
   // Refresh all UI components (filters, stats, tables, recaps)
 // ==================== REFRESH & INIT ====================
-function refreshSyphon() {
-  syphonBalMapCache = null;
-  syphonSortedRowsCache = null;
-  syphonStatsCache = null;
-  updateSyphonFilters();
-  recalcSyphon();
-  renderSyphonTable();
-  renderSyphonPlayerSummary();
-  renderSyphonPeriod();
-  renderSyphonMonthly();
-  renderSyphonChart();
-  updateSyphonDownloadBtn();
-}
-
   function refreshAll() {
   balMapCache = null;
   sortedRowsCache = null;
   statsCache = null;
+  // Rebuild existingKeysCache to reflect any edits
+  existingKeysCache = new Set(rows.map(rowKey));
   updateFilters();
   recalc();
   renderTable();
@@ -2698,38 +1700,47 @@ function refreshSyphon() {
 
 // ==================== KEYBOARD SHORTCUTS ====================
   document.addEventListener('keydown', function(e) {
+    // Don't trigger shortcuts when user is typing in input fields
+    const tag = e.target.tagName.toLowerCase();
+    const isTyping = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
     const ctrl = isMac ? e.metaKey : e.ctrlKey;
+
+    // Ctrl+Enter always works (parse log)
     if (ctrl && e.key === 'Enter') {
       e.preventDefault();
       parseLog();
     }
-    if (ctrl && e.key === 's') {
+    // Ctrl+S: save (skip when typing in inputs to avoid conflicts)
+    if (ctrl && e.key === 's' && !isTyping) {
       e.preventDefault();
       saveToStorage().then(() => {
         const toast = document.getElementById('dlToast');
-        document.getElementById('dlToastText').textContent = '💾 Data tersimpan!';
-        toast.classList.add('show');
-        setTimeout(() => hideToast('dlToast'), 2000);
+        if (toast) {
+          safeSet('dlToastText', 'textContent', '💾 Data tersimpan!');
+          toast.classList.add('show');
+          setTimeout(() => hideToast('dlToast'), 2000);
+        }
       });
     }
-    if (ctrl && e.key === 'e') {
+    // Ctrl+E: export (skip when typing)
+    if (ctrl && e.key === 'e' && !isTyping) {
       e.preventDefault();
       if (rows.length > 0) autoDownloadExcel();
     }
+    // Escape: always works to close modals
     if (e.key === 'Escape') {
       closeModal();
       closeAddModal();
       closeResetModal();
       closeBulkModal();
-      closeSyphonModal();
-      closeSyphonAddModal();
-      closeSyphonBulkModal();
-      document.getElementById('dupNotice').style.display = 'none';
+      safeSet('dupNotice', 'style.display', 'none');
     }
-    if (ctrl && e.key === 'f') {
+    // Ctrl+F: focus search (skip when already typing)
+    if (ctrl && e.key === 'f' && !isTyping) {
       e.preventDefault();
-      document.getElementById('fSearch').focus();
+      const searchEl = document.getElementById('fSearch');
+      if (searchEl) searchEl.focus();
     }
   });
 
@@ -2744,11 +1755,6 @@ window.onload = async function () {
     if (localStorage.getItem('darkMode') === '1') {
       document.body.classList.add('dark');
       document.getElementById('darkBtn').textContent = '☀️';
-    }
-    // Restore syphon mode state
-    const syphonModeState = localStorage.getItem('syphonModeActive');
-    if (syphonModeState === '1') {
-      setTimeout(() => toggleSyphonMode(), 100);
     }
     updateStorageBadge();
     // Initial balance input listener (if element exists)
@@ -2777,26 +1783,8 @@ window.onload = async function () {
     safeAddListener('fSearch', 'input', renderTable);
     safeAddListener('selectAllCb', 'change', function() { toggleSelectAll(this); });
 
-    // Syphon event listeners
-    safeAddListener('syphonParseBtn', 'click', parseSyphonLog);
-    safeAddListener('syphonAddManualBtn', 'click', openSyphonAddModal);
-    safeAddListener('syphonClearLogBtn', 'click', function() { const el = document.getElementById('syphonLogInput'); if (el) el.value = ''; });
-    safeAddListener('syphonFPlayer', 'change', renderSyphonTable);
-    safeAddListener('syphonFReason', 'change', renderSyphonTable);
-    safeAddListener('syphonFDateFrom', 'change', renderSyphonTable);
-    safeAddListener('syphonFDateTo', 'change', renderSyphonTable);
-    safeAddListener('syphonFSort', 'change', function() { applySyphonSort(this.value); });
-    safeAddListener('syphonFSearch', 'input', renderSyphonTable);
-    safeAddListener('syphonSelectAllCb', 'change', function() { syphonToggleSelectAll(this); });
-    safeAddListener('syphonDlBtn', 'click', autoDownloadSyphonExcel);
-    safeAddListener('syphonCsvBtn', 'click', exportSyphonCSV);
-    safeAddListener('syphonPdfBtn', 'click', exportSyphonPDF);
-
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
       btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
-    });
-    document.querySelectorAll('.syphon-tab-btn').forEach(function(btn) {
-      btn.addEventListener('click', function() { switchSyphonTab(parseInt(btn.dataset.tab.replace('syphon-', ''))); });
     });
     const uploadZone = document.getElementById('uploadZone');
     uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
@@ -2826,12 +1814,8 @@ window.onload = async function () {
         localStorage.removeItem(oldKey);
       }
     }
-    
-    // Load syphon data from storage
-    loadSyphonFromStorage();
-    
+
     refreshAll();
-    refreshSyphon();
     registerPWA();
   } catch(err) {
     console.error('App init error:', err);
@@ -2919,7 +1903,6 @@ function showUpdateBanner() {
   window.renderPeriod = renderPeriod;
   window.saveToStorage = saveToStorage;
   window.toggleDarkMode = toggleDarkMode;
-  window.toggleSyphonMode = toggleSyphonMode;
   window.logout = logout;
   window.loadFromStorage = loadFromStorage;
   window.saveJSONBackup = saveJSONBackup;
@@ -2960,42 +1943,4 @@ function showUpdateBanner() {
   window.mergeDuplicates = mergeDuplicates;
   window.renderChart = renderChart;
   window.quickEditTag = quickEditTag;
-
-  // Syphon functions
-  window.parseSyphonLog = parseSyphonLog;
-  window.renderSyphonTable = renderSyphonTable;
-  window.renderSyphonPlayerSummary = renderSyphonPlayerSummary;
-  window.renderSyphonPeriod = renderSyphonPeriod;
-  window.renderSyphonMonthly = renderSyphonMonthly;
-  window.renderSyphonChart = renderSyphonChart;
-  window.switchSyphonTab = switchSyphonTab;
-  window.refreshSyphon = refreshSyphon;
-  window.recalcSyphon = recalcSyphon;
-  window.saveSyphonToStorage = saveSyphonToStorage;
-  window.loadSyphonFromStorage = loadSyphonFromStorage;
-  window.saveSyphonJSONBackup = saveSyphonJSONBackup;
-  window.openSyphonAddModal = openSyphonAddModal;
-  window.closeSyphonAddModal = closeSyphonAddModal;
-  window.saveSyphonAdd = saveSyphonAdd;
-  window.editSyphonTransaction = editSyphonTransaction;
-  window.saveSyphonEdit = saveSyphonEdit;
-  window.closeSyphonModal = closeSyphonModal;
-  window.deleteSyphonTransaction = deleteSyphonTransaction;
-  window.undoSyphon = undoSyphon;
-  window.toggleSyphonSelect = toggleSyphonSelect;
-  window.syphonToggleSelectAll = syphonToggleSelectAll;
-  window.syphonSelectAllVisible = syphonSelectAllVisible;
-  window.syphonClearSelection = syphonClearSelection;
-  window.updateSyphonBulkBar = updateSyphonBulkBar;
-  window.openSyphonBulkModal = openSyphonBulkModal;
-  window.closeSyphonBulkModal = closeSyphonBulkModal;
-  window.confirmSyphonBulkDelete = confirmSyphonBulkDelete;
-  window.syphonGoPage = syphonGoPage;
-  window.changeSyphonRPP = changeSyphonRPP;
-  window.syphonSortTable = syphonSortTable;
-  window.applySyphonSort = applySyphonSort;
-  window.autoDownloadSyphonExcel = autoDownloadSyphonExcel;
-  window.exportSyphonCSV = exportSyphonCSV;
-  window.exportSyphonPDF = exportSyphonPDF;
-  window.updateSyphonDownloadBtn = updateSyphonDownloadBtn;
 })();

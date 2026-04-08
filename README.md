@@ -5,12 +5,18 @@ Balance Tracker & Transaction Log untuk Albion Online Guild.
 ## 📁 Struktur File
 
 ```
-├── index.html       (313 baris)   HTML utama
-├── style.css        (217 baris)   Semua styling (dark mode, responsive, chart)
-├── app.js           (1753 baris)  Logic aplikasi
-├── sw.js            (80 baris)    Service Worker (PWA offline)
-├── manifest.json    (21 baris)    Konfigurasi PWA
-└── icon.svg         (5 baris)     Icon aplikasi
+├── index.html       (~518 baris)  HTML utama
+├── login.html       (~159 baris)  Halaman login
+├── style.css        (~282 baris)  Semua styling (dark mode, responsive, chart, a11y)
+├── app.js           (~3090 baris) Logic aplikasi
+├── sw.js            (~100 baris)  Service Worker (PWA offline)
+├── manifest.json    (~33 baris)   Konfigurasi PWA
+├── netlify.toml     (~35 baris)   Konfigurasi deploy Netlify
+├── icon.svg         (5 baris)     Icon aplikasi
+├── icon-192.png                     Icon PWA 192x192
+├── icon-512.png                     Icon PWA 512x512
+├── .gitignore                       Git ignore rules
+└── .nojekyll                        GitHub Pages flag
 ```
 
 ## 🚀 Quick Start
@@ -48,7 +54,7 @@ npx serve .
 | **Storage** | IndexedDB (5000+ tx), localStorage fallback, JSON backup |
 | **PWA** | Offline access, installable, auto-update |
 | **UX** | Dark mode, pagination, keyboard shortcuts, toast notification |
-| **Security** | Password (SHA-256), audit log |
+| **Security** | Password (client-side SHA-256, untuk proteksi dasar), audit log |
 | **Multi** | Tag custom, multi-currency (Silver/Gold/Fame/Other) |
 
 ## ⌨️ Keyboard Shortcuts
@@ -56,17 +62,19 @@ npx serve .
 | Shortcut | Aksi |
 |----------|------|
 | `Ctrl + Enter` | Parse log |
-| `Ctrl + S` | Save data |
+| `Ctrl + S` | Save data *(mungkin diintersep browser untuk "Save Page As")* |
 | `Ctrl + E` | Export Excel |
 | `Ctrl + F` | Focus search |
 | `Esc` | Close modal |
 
+> **Catatan:** Shortcut tidak akan trigger saat Anda sedang mengetik di input field.
+
 ## 🔧 Teknologi
 
 - **Vanilla JS** — No framework, single IIFE
-- **SheetJS (xlsx)** — Excel parsing (CDN)
+- **SheetJS (xlsx)** — Excel parsing (CDN) — *TODO: tambahkan SRI hash integrity*
 - **IndexedDB** — Storage untuk data besar
-- **Crypto API** — SHA-256 password hashing, UUID generation
+- **Crypto API** — SHA-256 password hashing (client-side only, bukan pengganti server auth)
 - **Service Worker** — Offline caching & PWA
 
 ## 📊 Format Log

@@ -1,5 +1,5 @@
 /* ==================== BASE ==================== */
-*{box-sizing:border-box;margin:0;padding:0}
+*, *::before, *::after {box-sizing:border-box;margin:0;padding:0}
 body{font-family:Arial,sans-serif;background:#f4f4f4;color:#1a1a1a;padding:1.5rem}
 .wrap{max-width:1140px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
 .header-card,.section-card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:1rem 1.25rem}
@@ -215,30 +215,40 @@ body.dark .empty{color:#475569}
 body.dark #editError{background:#451a1a;border-color:#7f1d1d;color:#fca5a5}
 body.dark #addError{background:#451a1a;border-color:#7f1d1d;color:#fca5a5}
 
-/* ==================== SYPHON STYLES ==================== */
-/* Syphon uses same card structure as main tracker, with purple accent color for differentiation */
-#syphonEditError, #syphonAddError{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b}
-#syphonEditModal .modal-content, #syphonAddModal .modal-content, #syphonBulkModal .modal-content{background:#fff}
-body.dark #syphonEditError, body.dark #syphonAddError{background:#451a1a;border-color:#7f1d1d;color:#fca5a5}
-body.dark #syphonEditModal .modal-content, body.dark #syphonAddModal .modal-content, body.dark #syphonBulkModal .modal-content{background:#1e293b}
+/* ==================== ACCESSIBILITY: FOCUS STYLES ==================== */
+/* Visible focus indicators for keyboard navigation */
+*:focus-visible {
+  outline: 2px solid #1e40af;
+  outline-offset: 2px;
+}
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #1e40af;
+  outline-offset: 2px;
+}
+th.sortable:focus-visible {
+  outline: 2px solid #1e40af;
+  outline-offset: -2px;
+}
+/* Remove default outline for mouse users */
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}
 
-/* Syphon stats row styling */
-#syphon-st-bal, #syphon-st-net, #syphon-st-dep, #syphon-st-wit, #syphon-st-cnt{font-weight:600}
-
-/* Syphon bulk bar */
-#syphonBulkBar.visible{display:flex}
-#syphonBulkBar{background:#fef2f2;border-color:#fecaca}
-body.dark #syphonBulkBar{background:#451a1a;border-color:#7f1d1d}
-
-/* ==================== SYPHON TABS ==================== */
-.syphon-tab-btn{padding:9px 20px;border-radius:9999px;border:2px solid #e2e8f0;background:#f8fafc;color:#64748b;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .2s}
-.syphon-tab-btn:hover{border-color:#93c5fd}
-.syphon-tab-btn.active{background:#8b5cf6;border-color:#8b5cf6;color:#fff}
-.syphon-tab-panel{display:none}
-.syphon-tab-panel.active{display:block}
-body.dark .syphon-tab-btn{background:#0f172a;border-color:#334155;color:#94a3b8}
-body.dark .syphon-tab-btn.active{background:#8b5cf6;border-color:#8b5cf6;color:#fff}
-
-/* Syphon Chart Container */
-body.dark #syphonChartContainer{background:#1e293b;border-color:#334155}
+/* ==================== ACCESSIBILITY: REDUCED MOTION ==================== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .loading-spinner {
+    animation: none;
+  }
+}
 

@@ -36,6 +36,7 @@ body.dark .login-btn:hover{box-shadow:0 10px 25px rgba(102, 126, 234, 0.5)}
 body.dark .setup-btn{background:#0f172a;border-color:#334155;color:#f1f5f9}
 body.dark .setup-btn:hover{background:#334155}
 body.dark .error-msg{background:#7f1d1d;border-color:#dc2626;color:#fecaca}
+body.dark #successMsg{background:#14532d !important;border-color:#22c55e !important;color:#dcfce7 !important}
 body.dark .hint{color:#64748b}
 body.dark .dark-toggle{background:#334155;color:#e2e8f0}
 </style>
@@ -48,6 +49,7 @@ body.dark .dark-toggle{background:#334155;color:#e2e8f0}
     <p>Albion Online — Balance Tracker</p>
   </div>
   <div class="error-msg" id="errorMsg"></div>
+  <div class="error-msg" id="successMsg" style="background:#dcfce7;border-color:#86efac;color:#166534"></div>
   <form class="login-form" id="loginForm" onsubmit="handleLogin(event)">
     <input type="password" id="loginPassword" placeholder="Masukkan password" autocomplete="current-password" required>
     <button type="submit" class="login-btn">🔓 Masuk</button>

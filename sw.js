@@ -1,4 +1,4 @@
-const CACHE_NAME = 'albion-treasury-v4';
+const CACHE_NAME = 'albion-treasury-v5';
 const ASSETS = [
   './',
   './login.html',
@@ -41,38 +41,60 @@ self.addEventListener('activate', function(event) {
 self.addEventListener('fetch', function(event) {
   if (event.request.method !== 'GET') return;
 
-  if (event.request.url.indexOf('http') === 0) {
+  // Use network-first strategy for navigation requests
+  if (event.request.mode === 'navigate') {
     event.respondWith(
-      caches.match(event.request).then(function(cached) {
-        var fetchPromise = fetch(event.request).then(function(response) {
-          var responseToCache = response.clone();
-          caches.open(CACHE_NAME).then(function(cache) {
-            cache.put(event.request, responseToCache);
-          });
-          return response;
-        }).catch(function() {
-          return cached;
-        });
-        return cached || fetchPromise;
+      fetch(event.request).catch(function() {
+        return caches.match(event.request);
       })
     );
     return;
   }
 
+  // Cache-first strategy for static assets
   event.respondWith(
     caches.match(event.request).then(function(cached) {
-      var fetchPromise = fetch(event.request).then(function(response) {
-        var responseToCache = response.clone();
-        caches.open(CACHE_NAME).then(function(cache) {
-          cache.put(event.request, responseToCache);
+      if (cached) {
+        // Update cache in background (stale-while-revalidate)
+        var fetchPromise = fetch(event.request).then(function(networkResponse) {
+          // Only cache successful responses
+          if (networkResponse && networkResponse.status === 200) {
+            var responseToCache = networkResponse.clone();
+            event.waitUntil(
+              caches.open(CACHE_NAME).then(function(cache) {
+                return cache.put(event.request, responseToCache);
+              })
+            );
+          }
+          return networkResponse;
+        }).catch(function() {
+          // Network failed, return cached
+          return null;
         });
+        return cached;
+      }
+
+      // Not in cache, fetch from network
+      return fetch(event.request).then(function(response) {
+        // Only cache successful responses
+        if (response && response.status === 200) {
+          var responseToCache = response.clone();
+          event.waitUntil(
+            caches.open(CACHE_NAME).then(function(cache) {
+              return cache.put(event.request, responseToCache);
+            })
+          );
+        }
         return response;
+      }).catch(function() {
+        // Return null if both cache and network fail
+        return null;
       });
-      return cached || fetchPromise;
     })
   );
 });
 
+// Handle messages from clients
 self.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
