@@ -30,6 +30,7 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
         <div class="guild-sub">Balance Tracker &amp; Transaction Log</div>
       </div>
       <div class="balance-area">
+        <input type="hidden" id="initBal" value="0">
         <button onclick="toggleSyphonMode()" id="syphonBtn" style="font-size:13px;padding:8px 12px;background:#8b5cf6;color:#fff;border:none;border-radius:8px;cursor:pointer">🔮 Syphon</button>
       </div>
     </div>
@@ -219,8 +220,16 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
 
     <!-- SYPHON MODE -->
     <div id="syphonTabs" style="display:none">
-      <!-- TAB 4: SYPHON TRACKER -->
-      <div class="tab-panel active" id="tab-4">
+      <!-- SYPHON TABS -->
+      <div class="tab-row">
+        <button class="syphon-tab-btn active" data-tab="syphon-0">📋 Log Syphon</button>
+        <button class="syphon-tab-btn" data-tab="syphon-1">📅 Rekap Mingguan &amp; Harian</button>
+        <button class="syphon-tab-btn" data-tab="syphon-2">📅 Rekap per Tanggal 1 (Bulanan)</button>
+        <button class="syphon-tab-btn" data-tab="syphon-3">📊 Grafik Trend</button>
+      </div>
+
+      <!-- TAB SYPHON 0: SYPHON LOG -->
+      <div class="syphon-tab-panel active" id="syphon-tab-0">
       <!-- SYPHON PASTE LOG SECTION -->
       <div class="section-card" style="margin-bottom:12px">
         <div class="section-header">
@@ -299,25 +308,51 @@ if (!sessionStorage.getItem('treasuryLoggedIn')) {
         </div>
         <div class="pagination" id="syphonPagination"></div>
       </div>
-
-      <!-- SYPHON PLAYER SUMMARY -->
-      <div class="section-card" style="margin-bottom:12px">
-        <div class="section-header" style="margin-bottom:10px">
-          <span class="section-title">👥 Rekap Per Player</span>
-        </div>
-        <div id="syphonPlayerSummaryGrid" class="monthly-grid">
-          <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
-        </div>
       </div>
 
-      <!-- SYPHON PERIOD SUMMARY -->
+      <!-- TAB SYPHON 1: Rekap Mingguan & Harian -->
+      <div class="syphon-tab-panel" id="syphon-tab-1">
       <div class="section-card">
-        <div class="section-header" style="margin-bottom:10px">
-          <span class="section-title">📅 Rekap Per Periode</span>
-        </div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">Menampilkan selisih (networth) transaksi per minggu dan per hari. Minggu dihitung dari tanggal 1.</div>
         <div id="syphonPeriodGrid" class="monthly-grid">
           <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
         </div>
+      </div>
+      </div>
+
+      <!-- TAB SYPHON 2: Rekap Bulanan -->
+      <div class="syphon-tab-panel" id="syphon-tab-2">
+      <div class="section-card">
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">Saldo Awal tiap bulan dihitung dari tanggal 1 (sisa saldo bulan sebelumnya).</div>
+        <div id="syphonMonthlyGrid" class="monthly-grid">
+          <div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+        </div>
+      </div>
+      </div>
+
+      <!-- TAB SYPHON 3: Grafik Trend -->
+      <div class="syphon-tab-panel" id="syphon-tab-3">
+      <div class="section-card">
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">Visualisasi trend transaksi per bulan.</div>
+        <div class="filter-row" style="margin-bottom:12px">
+          <label>Tipe:</label>
+          <select id="syphonChartType" onchange="renderSyphonChart()">
+            <option value="bar">Bar Chart</option>
+            <option value="line">Line Chart</option>
+            <option value="both">Bar + Line</option>
+          </select>
+          <label>Metrik:</label>
+          <select id="syphonChartMetric" onchange="renderSyphonChart()">
+            <option value="net">Net (Masuk - Keluar)</option>
+            <option value="dep">Total Masuk</option>
+            <option value="wit">Total Keluar</option>
+            <option value="count">Jumlah Transaksi</option>
+          </select>
+        </div>
+        <div id="syphonChartContainer" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;min-height:280px;position:relative;overflow-x:auto">
+          <div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>
+        </div>
+      </div>
       </div>
     </div>
   </div>

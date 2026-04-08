@@ -230,3 +230,15 @@ body.dark #syphonEditModal .modal-content, body.dark #syphonAddModal .modal-cont
 #syphonBulkBar{background:#fef2f2;border-color:#fecaca}
 body.dark #syphonBulkBar{background:#451a1a;border-color:#7f1d1d}
 
+/* ==================== SYPHON TABS ==================== */
+.syphon-tab-btn{padding:9px 20px;border-radius:9999px;border:2px solid #e2e8f0;background:#f8fafc;color:#64748b;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .2s}
+.syphon-tab-btn:hover{border-color:#93c5fd}
+.syphon-tab-btn.active{background:#8b5cf6;border-color:#8b5cf6;color:#fff}
+.syphon-tab-panel{display:none}
+.syphon-tab-panel.active{display:block}
+body.dark .syphon-tab-btn{background:#0f172a;border-color:#334155;color:#94a3b8}
+body.dark .syphon-tab-btn.active{background:#8b5cf6;border-color:#8b5cf6;color:#fff}
+
+/* Syphon Chart Container */
+body.dark #syphonChartContainer{background:#1e293b;border-color:#334155}
+

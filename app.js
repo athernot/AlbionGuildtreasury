@@ -1873,6 +1873,147 @@ function renderSyphonPeriod() {
   }).join('');
 }
 
+// ==================== SYPHON MONTHLY DATA ====================
+function buildSyphonMonthlyData() {
+  const sorted = syphonSortedRowsCache && syphonSortedRowsCache.length === syphonRows.length
+    ? syphonSortedRowsCache
+    : [...syphonRows].sort((a,b) => a.date.localeCompare(b.date));
+  const monthOrder = [], monthMap = {};
+  let run = 0;
+  sorted.forEach(r => {
+    const ym = r.date.substring(0,7);
+    if (!monthMap[ym]) {
+      monthMap[ym] = {ym, openBal: run, dep:0, wit:0, count:0, closeBal:run};
+      monthOrder.push(ym);
+    }
+    run += r.amount;
+    if (r.amount > 0) monthMap[ym].dep += r.amount; else monthMap[ym].wit += r.amount;
+    monthMap[ym].count++;
+    monthMap[ym].closeBal = run;
+  });
+  return {monthOrder, monthMap};
+}
+
+function renderSyphonMonthly() {
+  const {monthOrder, monthMap} = buildSyphonMonthlyData();
+  const grid = document.getElementById('syphonMonthlyGrid');
+  if (!monthOrder.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
+    return;
+  }
+  grid.innerHTML = monthOrder.map(ym => {
+    const m = monthMap[ym];
+    const net = m.dep + m.wit;
+    const netCls = net >= 0 ? 'green' : 'red';
+    return `<div class="month-card">
+      <div class="month-label">📅 ${monthLabel(ym)}<span class="month-cnt">${m.count} transaksi</span></div>
+      <div class="month-rows">
+        <div class="month-row"><span class="month-row-label">Saldo Awal (Tgl 1)</span><span class="month-row-val">${fmt(m.openBal)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Masuk</span><span class="month-row-val green">+${fmt(m.dep)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Keluar</span><span class="month-row-val red">${fmt(m.wit)}</span></div>
+        <div class="month-row"><span class="month-row-label">Net Bulan Ini</span><span class="month-row-val ${netCls}">${net>=0?'+':''}${fmt(net)}</span></div>
+      </div>
+      <hr class="month-divider">
+      <div class="month-row"><span class="month-row-label" style="font-weight:600">Saldo Akhir</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ==================== SYPHON CHART ====================
+function renderSyphonChart() {
+  const container = document.getElementById('syphonChartContainer');
+  const {monthOrder, monthMap} = buildSyphonMonthlyData();
+  if (!monthOrder.length) {
+    container.innerHTML = '<div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
+    return;
+  }
+  const type = document.getElementById('syphonChartType').value;
+  const metric = document.getElementById('syphonChartMetric').value;
+  const labels = monthOrder.map(ym => monthLabel(ym));
+  const values = monthOrder.map(ym => {
+    const m = monthMap[ym];
+    if (metric === 'net') return m.dep + m.wit;
+    if (metric === 'dep') return m.dep;
+    if (metric === 'wit') return Math.abs(m.wit);
+    if (metric === 'count') return m.count;
+    return 0;
+  });
+  const maxVal = Math.max.apply(null, values.concat([1]));
+  const minVal = Math.min.apply(null, values);
+  const hasNeg = minVal < 0;
+  const chartH = 220;
+  const padL = 60, padR = 10, padT = 10, padB = 50;
+  const W = Math.max(600, labels.length * 80);
+  const chartW = W - padL - padR;
+  const chartH2 = chartH - padT - padB;
+  const zeroY = hasNeg ? padT + chartH2 / 2 : padT + chartH2;
+  const scaleH = hasNeg ? chartH2 / 2 : chartH2;
+
+  let svg = '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + chartH + '" xmlns="http://www.w3.org/2000/svg">';
+
+  var steps = 4;
+  for (var i = 0; i <= steps; i++) {
+    var y = padT + (chartH2 / steps) * i;
+    var val = hasNeg ? maxVal - (maxVal - minVal) * (i / steps) : maxVal * (1 - i / steps);
+    svg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#e2e8f0" stroke-width="1"/>';
+    svg += '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="9" fill="#94a3b8">' + shortNum(val) + '</text>';
+  }
+  if (hasNeg) {
+    svg += '<line x1="' + padL + '" y1="' + zeroY + '" x2="' + (W - padR) + '" y2="' + zeroY + '" stroke="#94a3b8" stroke-width="1.5"/>';
+  }
+
+  var barW = Math.min(40, (chartW / labels.length) * 0.6);
+  var gap = chartW / labels.length;
+
+  if (type === 'bar' || type === 'both') {
+    for (var j = 0; j < values.length; j++) {
+      var x = padL + gap * j + (gap - barW) / 2;
+      var v = values[j];
+      var barH = (Math.abs(v) / (hasNeg ? Math.max(maxVal, Math.abs(minVal)) : maxVal)) * scaleH;
+      var barY = v >= 0 ? zeroY - barH : zeroY;
+      var color = v >= 0 ? '#1D9E75' : '#D85A30';
+      svg += '<rect x="' + x + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="3" opacity="0.85">';
+      svg += '<title>' + labels[j] + ': ' + fmt(v) + '</title></rect>';
+    }
+  }
+
+  if (type === 'line' || type === 'both') {
+    var pts = [];
+    for (var k = 0; k < values.length; k++) {
+      var px = padL + gap * k + gap / 2;
+      var py = zeroY - (values[k] / (hasNeg ? Math.max(maxVal, Math.abs(minVal)) : maxVal)) * scaleH;
+      pts.push({ x: px, y: py, v: values[k], label: labels[k] });
+    }
+    if (pts.length > 1) {
+      var pathD = pts.map(function(p, i) { return (i === 0 ? 'M' : 'L') + p.x + ' ' + p.y; }).join(' ');
+      svg += '<path d="' + pathD + '" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>';
+    }
+    pts.forEach(function(p) {
+      svg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="4" fill="#8b5cf6" stroke="#fff" stroke-width="1.5">';
+      svg += '<title>' + p.label + ': ' + fmt(p.v) + '</title></circle>';
+    });
+  }
+
+  for (var l = 0; l < labels.length; l++) {
+    var lx = padL + gap * l + gap / 2;
+    svg += '<text x="' + lx + '" y="' + (chartH - 4) + '" text-anchor="middle" font-size="9" fill="#64748b" transform="rotate(-30,' + lx + ',' + (chartH - 4) + ')">' + labels[l] + '</text>';
+  }
+
+  svg += '</svg>';
+
+  var legend = '<div class="chart-legend">';
+  if (type === 'bar' || type === 'both') {
+    legend += '<span><span class="dot" style="background:#1D9E75"></span> Positif</span>';
+    legend += '<span><span class="dot" style="background:#D85A30"></span> Negatif</span>';
+  }
+  if (type === 'line' || type === 'both') {
+    legend += '<span><span class="dot" style="background:#8b5cf6"></span> Trend</span>';
+  }
+  legend += '</div>';
+
+  container.innerHTML = '<div class="chart-wrap">' + svg + '<div class="chart-tooltip" id="syphonChartTip"></div></div>' + legend;
+}
+
 // ==================== CHART ====================
 function renderChart() {
   const container = document.getElementById('chartContainer');
@@ -2166,6 +2307,13 @@ function switchTab(n) {
   if (panel) panel.classList.add('active');
 }
 
+function switchSyphonTab(n) {
+  document.querySelectorAll('.syphon-tab-btn').forEach((b, i) => b.classList.toggle('active', i === n));
+  document.querySelectorAll('.syphon-tab-panel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('syphon-tab-' + n);
+  if (panel) panel.classList.add('active');
+}
+
 // ==================== BULK SELECT & DELETE ====================
 function toggleSelect(id, cb) {
   if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
@@ -2377,6 +2525,8 @@ function refreshSyphon() {
   renderSyphonTable();
   renderSyphonPlayerSummary();
   renderSyphonPeriod();
+  renderSyphonMonthly();
+  renderSyphonChart();
 }
 
   function refreshAll() {
@@ -2488,6 +2638,9 @@ window.onload = async function () {
 
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
       btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
+    });
+    document.querySelectorAll('.syphon-tab-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() { switchSyphonTab(parseInt(btn.dataset.tab.replace('syphon-', ''))); });
     });
     const uploadZone = document.getElementById('uploadZone');
     uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
@@ -2657,6 +2810,9 @@ function showUpdateBanner() {
   window.renderSyphonTable = renderSyphonTable;
   window.renderSyphonPlayerSummary = renderSyphonPlayerSummary;
   window.renderSyphonPeriod = renderSyphonPeriod;
+  window.renderSyphonMonthly = renderSyphonMonthly;
+  window.renderSyphonChart = renderSyphonChart;
+  window.switchSyphonTab = switchSyphonTab;
   window.refreshSyphon = refreshSyphon;
   window.recalcSyphon = recalcSyphon;
   window.saveSyphonToStorage = saveSyphonToStorage;
