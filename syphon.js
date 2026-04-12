@@ -1,0 +1,2063 @@
+(function() {
+  'use strict';
+
+  // ==================== V1.0 SYPHON ENERGY GLOBAL VARIABLES ====================
+  /** @type {Array<{date:string,player:string,reason:string,amount:number,id:string}>} */
+  let rows = [];
+  /** @type {object|null} */
+  let lastDeleted = null;
+  let lastBulkDeleted = null;
+  /** @type {number|null} */
+  let undoTimeout = null;
+  /** @type {object|null} */
+  let balMapCache = null;
+  const APP_VERSION = 'V1.1';
+  const STORAGE_KEY = 'syphonGuildEnergyV10';
+  /** @type {{col:number,dir:'asc'|'desc'}} */
+  let currentSort = { col: 1, dir: 'desc' };
+  /** @type {string|null} */
+  let editingId = null;
+  /** @type {number|null} */
+  let lastSavedTime = null;
+  let useIndexedDB = false;
+  const DB_NAME = 'albionSyphonEnergyDB';
+  const DB_VERSION = 1;
+  /** @type {IDBDatabase|null} */
+  let db = null;
+  /** @type {number|null} */
+  let saveDebounceTimer = null;
+  /** @type {Set<string>} */
+  let selectedIds = new Set();
+  let currentPage = 1;
+  let rowsPerPage = 50;
+  let existingKeysCache = new Set();
+  let dirtyIds = { added: new Set(), deleted: new Set() };
+  let lastDuplicates = [];
+  let auditLog = [];
+  let sortedRowsCache = null;
+  let statsCache = null;
+  let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+
+  function logAudit(action, details) {
+    auditLog.push({ timestamp: new Date().toISOString(), action: action, details: details });
+    if (auditLog.length > 500) auditLog = auditLog.slice(-500);
+    try { localStorage.setItem('syphonAuditLog', JSON.stringify(auditLog)); } catch(e) {
+      console.warn('⚠️ Audit log failed to save to localStorage:', e);
+      if (auditLog.length > 100) auditLog = auditLog.slice(-100);
+    }
+  }
+
+  // ==================== INDEXEDDB ====================
+  async function initDB() {
+    return new Promise((resolve, reject) => {
+      try {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = e => {
+          const dbInstance = e.target.result;
+          if (!dbInstance.objectStoreNames.contains('transactions')) dbInstance.createObjectStore('transactions', { keyPath: 'id' });
+          if (!dbInstance.objectStoreNames.contains('settings')) dbInstance.createObjectStore('settings');
+        };
+        request.onsuccess = e => { db = e.target.result; resolve(); };
+        request.onerror = e => {
+          console.warn('IndexedDB not available:', e.target.error);
+          useIndexedDB = false;
+          resolve();
+        };
+      } catch (err) {
+        console.warn('IndexedDB init error:', err);
+        useIndexedDB = false;
+        resolve();
+      }
+    });
+  }
+
+  async function saveToIndexedDB() {
+    if (!db) return;
+    try {
+      const tx = db.transaction(['transactions','settings'], 'readwrite');
+      const store = tx.objectStore('transactions');
+      var currentIds = new Set(rows.map(function(r) { return r.id; }));
+      dirtyIds.added.forEach(function(id) {
+        var r = rows.find(function(row) { return row.id === id; });
+        if (r) store.put(r);
+      });
+      dirtyIds.deleted.forEach(function(id) {
+        if (!currentIds.has(id)) store.delete(id);
+      });
+      tx.objectStore('settings').put({initBal: parseFloat(document.getElementById('initBal').value)||0}, 'config');
+      dirtyIds.added.clear();
+      dirtyIds.deleted.clear();
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (err) {
+      if (err.name === 'QuotaExceededError') {
+        alert('⚠️ Browser storage is full! Energy data cannot be saved to IndexedDB. Export JSON backup now.');
+        useIndexedDB = false;
+        saveToStorage();
+      } else if (err.name === 'NotAllowedError') {
+        alert('⚠️ IndexedDB access denied. Check browser permissions.');
+        useIndexedDB = false;
+      } else {
+        console.error('IndexedDB save error:', err);
+      }
+      throw err;
+    }
+  }
+
+  async function loadFromIndexedDB() {
+    if (!db) return false;
+    try {
+      const tx = db.transaction(['transactions','settings']);
+      const rowsReq = tx.objectStore('transactions').getAll();
+      const configReq = tx.objectStore('settings').get('config');
+      const [loadedRows, config] = await new Promise((resolve, reject) => {
+        rowsReq.onsuccess = () => resolve([rowsReq.result, configReq.result]);
+        rowsReq.onerror = () => reject(rowsReq.error);
+      });
+      if (loadedRows && loadedRows.length) {
+        rows = loadedRows.map(function(r) {
+          if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
+          if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
+          return r;
+        });
+        balMapCache = null;
+        sortedRowsCache = null;
+        statsCache = null;
+        document.getElementById('initBal').value = config ? config.initBal : 0;
+        return true;
+      }
+    } catch (err) {
+      console.error('IndexedDB load error:', err);
+      useIndexedDB = false;
+    }
+    return false;
+  }
+
+  // ==================== UTILITIES ====================
+  function fmt(n){ return (n<0?'-':'') + Math.abs(Math.round(n)).toLocaleString('en-US'); }
+
+  function rowKey(r){ return r.id + '|||' + r.date + '|||' + r.player + '|||' + r.reason + '|||' + r.amount; }
+
+  function dupKey(r){ return r.date + '|||' + r.player + '|||' + r.reason + '|||' + r.amount; }
+
+  function escHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+      .replace(/\\/g, '&#92;');
+  }
+
+  /**
+   * Escape a string for safe use inside onclick handler attributes
+   * Prevents XSS when player names or other user data are embedded in HTML event handlers
+   * @param {string} str
+   * @returns {string}
+   */
+  function escAttr(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+      .replace(/`/g, '&#96;')
+      .replace(/\\/g, '&#92;');
+  }
+
+  function isValidDate(dateStr) {
+    if (!dateStr || typeof dateStr !== 'string') return false;
+    if (!/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(dateStr)) return false;
+    const d = new Date(dateStr.replace(' ', 'T'));
+    return d instanceof Date && !isNaN(d.getTime());
+  }
+
+  function getTimestamp(dateStr) {
+    if (!dateStr) return 0;
+    const datePart = dateStr.split(/[T ]/)[0];
+    const parts = datePart.split('-');
+    if (parts.length !== 3) return 0;
+    const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    if (isNaN(d.getTime())) return 0;
+    return d.getTime();
+  }
+
+  function getWeekOfMonth(dateStr) {
+    const d = new Date(dateStr.replace(' ', 'T'));
+    const day = d.getDate();
+    const firstDay = new Date(d.getFullYear(), d.getMonth(), 1);
+    const dayOfWeek = firstDay.getDay();
+    const offset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    return Math.floor((day + offset - 1) / 7) + 1;
+  }
+
+  function monthLabel(ym) {
+    const [y, m] = ym.split('-');
+    const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return names[parseInt(m)-1] + ' ' + y;
+  }
+
+  function generateId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
+
+  // ==================== HELPERS ====================
+  function getInitialBalance() {
+    const el = document.getElementById('initBal');
+    return el ? parseFloat(el.value) || 0 : 0;
+  }
+
+  function safeAddListener(id, event, handler) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(event, handler);
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  function safeSet(id, prop, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    var parts = prop.split('.');
+    var obj = el;
+    for (var i = 0; i < parts.length - 1; i++) {
+      obj = obj[parts[i]];
+      if (!obj) return;
+    }
+    obj[parts[parts.length - 1]] = value;
+  }
+
+  // ==================== AUTH ====================
+  function toggleDarkMode() {
+    document.body.classList.toggle('dark');
+    const isDark = document.body.classList.contains('dark');
+    localStorage.setItem('darkMode', isDark ? '1' : '0');
+    document.getElementById('darkBtn').textContent = isDark ? '☀️' : '🌙';
+  }
+
+  function logout() {
+    if (!confirm('🚪 Logout? You will need to login again to access the app.')) return;
+    sessionStorage.removeItem('albionLoggedIn');
+    window.location.href = './login.html';
+  }
+
+  // ==================== STORAGE (Hybrid) ====================
+  let savePromise = null;
+  async function saveToStorage() {
+    if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+    if (savePromise) return savePromise;
+
+    savePromise = new Promise((resolve, reject) => {
+      saveDebounceTimer = setTimeout(async () => {
+        saveDebounceTimer = null;
+        savePromise = null;
+        try {
+          const init = getInitialBalance();
+          if (useIndexedDB && db) {
+            try { await saveToIndexedDB(); } catch(e) {
+              useIndexedDB = false;
+              const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            }
+          } else {
+            const data = { version: APP_VERSION, timestamp: Date.now(), initBal: init, rows };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          }
+          lastSavedTime = Date.now();
+          updateStorageBadge();
+          resolve();
+        } catch (error) {
+          savePromise = null;
+          reject(error);
+        }
+      }, 300);
+    });
+
+    return savePromise;
+  }
+
+  async function loadFromStorage() {
+    if (rows.length > 5000) {
+      await initDB();
+      useIndexedDB = true;
+      if (await loadFromIndexedDB()) {
+        alert('✅ Energy data loaded from IndexedDB (5000+ transactions)');
+        refreshAll();
+        return;
+      }
+    }
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) {
+      const toast = document.getElementById('dlToast');
+      document.getElementById('dlToastText').textContent = '⚠️ No energy data saved in browser yet. Upload Excel/JSON file or paste new log.';
+      toast.classList.add('show');
+      setTimeout(() => hideToast('dlToast'), 4000);
+      return;
+    }
+    if (!confirm('Load energy data from browser? Current data will be replaced.')) return;
+    let data;
+    try { data = JSON.parse(saved); } catch(e) { return alert('❌ Energy data in browser is corrupted. Clear browser data or import JSON backup.'); }
+    document.getElementById('initBal').value = data.initBal || 0;
+    rows = (data.rows || []).map(function(r) {
+      if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
+      if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
+      return r;
+    });
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    existingKeysCache = new Set(rows.map(rowKey));
+    dirtyIds.added.clear();
+    dirtyIds.deleted.clear();
+    document.getElementById('uploadZone').classList.add('upload-loaded');
+    document.getElementById('uploadZoneText').innerHTML = `✅ Browser energy data loaded — ${rows.length} transactions`;
+    saveToStorage();
+    refreshAll();
+    alert('✅ Energy data successfully loaded from browser!');
+  }
+
+  function saveJSONBackup() {
+    if (rows.length === 0) return alert('No energy data to backup.');
+    const data = { version: APP_VERSION, timestamp: Date.now(), initBal: parseFloat(document.getElementById('initBal').value)||0, rows };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `syphon_energy_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+
+  function updateStorageBadge() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    const badge = document.getElementById('storageBadge');
+    if (saved) {
+      const data = JSON.parse(saved);
+      const date = new Date(data.timestamp);
+      badge.textContent = `Browser: ${data.rows.length} tx • ${date.toLocaleDateString('en-US')}`;
+      const lastSavedEl = document.getElementById('lastSaved');
+      lastSavedEl.style.display = 'block';
+      lastSavedEl.innerHTML = `💾 Last saved: ${date.toLocaleString('en-US')}`;
+    } else {
+      badge.textContent = 'Browser Storage: Empty';
+    }
+  }
+
+  // ==================== FILE UPLOAD & PARSE LOG ====================
+  function handleFileSelect(e) {
+    let file = e.target && e.target.files ? e.target.files[0] : (e.dataTransfer ? e.dataTransfer.files[0] : null);
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext !== 'json' && ext !== 'xlsx' && ext !== 'xls') {
+      return alert('⚠️ File format not supported. Use .xlsx, .xls, or .json');
+    }
+    if (ext === 'json') {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          if (!data.rows || !Array.isArray(data.rows)) {
+            return alert('⚠️ JSON file does not have a valid "rows" field.');
+          }
+          let validCount = 0, invalidCount = 0;
+          const validRows = data.rows.filter(function(r) {
+            if (!r || typeof r !== 'object') { invalidCount++; return false; }
+            if (!r.date || !r.player || !r.reason || r.amount === undefined || r.amount === null) { invalidCount++; return false; }
+            if (!isValidDate(String(r.date))) { invalidCount++; return false; }
+            const amt = Number(r.amount);
+            if (isNaN(amt) || !isFinite(amt)) { invalidCount++; return false; }
+            r.amount = amt;
+            r.date = String(r.date);
+            r.player = String(r.player);
+            r.reason = String(r.reason);
+            if (!r.id) r.id = generateId();
+            validCount++;
+            return true;
+          });
+          if (validRows.length === 0) {
+            return alert('⚠️ No valid energy transactions in JSON file. (' + invalidCount + ' invalid rows)');
+          }
+          rows = validRows.map(function(r) {
+            if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
+            if (!r.reasonLc) r.reasonLc = (r.reason || '').toLowerCase();
+            return r;
+          });
+          balMapCache = null;
+          sortedRowsCache = null;
+          statsCache = null;
+          document.getElementById('initBal').value = data.initBal || 0;
+          document.getElementById('uploadZone').classList.add('upload-loaded');
+          let msg = '✅ ' + escHtml(file.name) + ' (JSON) — ' + validRows.length + ' energy transactions';
+          if (invalidCount > 0) msg += ' (' + invalidCount + ' rows skipped)';
+          document.getElementById('uploadZoneText').innerHTML = msg;
+          saveToStorage();
+          refreshAll();
+          alert('✅ Energy JSON backup loaded successfully!' + (invalidCount > 0 ? '\n⚠️ ' + invalidCount + ' invalid rows skipped.' : ''));
+        } catch(err) { alert('❌ Failed to read JSON: ' + err.message); }
+      };
+      reader.readAsText(file);
+    } else {
+      if (typeof XLSX === 'undefined') {
+        return alert('⚠️ XLSX library (SheetJS) not loaded. Ensure internet connection is available to load the library from CDN.\n\nAlternative: Use JSON backup file.');
+      }
+      const reader = new FileReader();
+      reader.onload = function(ev) {
+        try {
+          const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
+          const sheetName = wb.SheetNames.find(function(n) { return n.toLowerCase().includes('log'); }) || wb.SheetNames[0];
+          if (!sheetName) return alert('⚠️ Excel file has no sheets.');
+          const ws = wb.Sheets[sheetName];
+          const aoa = XLSX.utils.sheet_to_json(ws, {header:1});
+          if (!aoa || aoa.length < 2) return alert('⚠️ Sheet "' + sheetName + '" is empty or has no data.');
+          let validCount = 0, invalidCount = 0;
+          rows = [];
+          for (let i = 1; i < aoa.length; i++) {
+            const r = aoa[i];
+            if (!r || r.length < 5) { invalidCount++; continue; }
+            const amt = Number(r[4]);
+            if (isNaN(amt) || !isFinite(amt)) { invalidCount++; continue; }
+            const dateStr = String(r[1]);
+            if (!isValidDate(dateStr)) { invalidCount++; continue; }
+            rows.push({date: dateStr, player: String(r[2]), reason: String(r[3]), amount: amt, id: generateId(), playerLc: String(r[2]).toLowerCase(), reasonLc: String(r[3]).toLowerCase()});
+            validCount++;
+          }
+          balMapCache = null;
+          sortedRowsCache = null;
+          statsCache = null;
+          document.getElementById('uploadZone').classList.add('upload-loaded');
+          let msg = '✅ ' + escHtml(file.name) + ' — ' + validCount + ' energy transactions';
+          if (invalidCount > 0) msg += ' (' + invalidCount + ' rows skipped)';
+          document.getElementById('uploadZoneText').innerHTML = msg;
+          saveToStorage();
+          refreshAll();
+          if (invalidCount > 0) alert('✅ Excel energy data loaded!\n⚠️ ' + invalidCount + ' invalid rows skipped.');
+        } catch(err) { alert('❌ Failed to read file: ' + err.message); }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  }
+
+  function parseLog() {
+    const raw = document.getElementById('logInput').value.trim();
+    if (!raw) return;
+    showLoading('Parsing energy log...');
+    setTimeout(() => {
+      const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      const dupCache = new Set(rows.map(dupKey));
+      const added = [], duplicates = [];
+      for (const line of lines) {
+        if (/^\s*"?date\s+"?player\s+"?reason\s+"?amount/i.test(line)) continue;
+        const matches = line.match(/"([^"]*)"/g);
+        if (!matches || matches.length < 4) continue;
+        const values = matches.map(m => m.slice(1, -1));
+        const amt = parseFloat(values[3]);
+        if (isNaN(amt) || !isFinite(amt)) continue;
+        const entry = { date: values[0], player: values[1], reason: values[2], amount: amt, id: generateId(), playerLc: values[1].toLowerCase(), reasonLc: values[2].toLowerCase() };
+        if (!isValidDate(entry.date)) continue;
+        const key = dupKey(entry);
+        if (dupCache.has(key)) {
+          duplicates.push(entry);
+        } else {
+          rows.push(entry);
+          dupCache.add(key);
+          existingKeysCache.add(rowKey(entry));
+          dirtyIds.added.add(entry.id);
+          added.push(entry);
+        }
+      }
+      hideLoading();
+      showNotices(added.length, duplicates);
+      balMapCache = null;
+      sortedRowsCache = null;
+      statsCache = null;
+      saveToStorage();
+      refreshAll();
+    }, 50);
+  }
+
+  function showNotices(addedCount, duplicates) {
+    lastDuplicates = duplicates;
+    safeSet('dupNotice', 'style.display', 'none');
+    safeSet('okNotice', 'className', '');
+    safeSet('mergeDupBtn', 'style.display', duplicates.length > 0 ? 'inline-block' : 'none');
+    if (duplicates.length > 0) {
+      safeSet('dupSummary', 'textContent', `${duplicates.length} rows skipped (duplicates). ${addedCount} new rows added.`);
+      safeSet('dupBody', 'innerHTML', duplicates.map((r,i) => `
+        <tr>
+          <td style="color:#aaa">${i+1}</td>
+          <td>${escHtml(r.date)}</td>
+          <td><strong>${escHtml(r.player)}</strong></td>
+          <td>${escHtml(r.reason)}</td>
+          <td style="color:${r.amount>=0?'#059669':'#dc2626'};font-weight:600">${fmt(r.amount)}</td>
+          <td><span style="background:#fde68a;color:#78350f;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600">DUPLICATE</span></td>
+        </tr>`).join(''));
+      safeSet('dupNotice', 'style.display', 'block');
+      setTimeout(() => { safeSet('dupNotice', 'style.display', 'none'); }, 8000);
+    } else if (addedCount > 0) {
+      safeSet('okText', 'textContent', `${addedCount} energy transactions added successfully.`);
+      safeSet('okNotice', 'className', 'visible');
+      setTimeout(() => { safeSet('okNotice', 'className', ''); }, 4000);
+    }
+  }
+
+  function mergeDuplicates() {
+    if (lastDuplicates.length === 0) return;
+    const grouped = {};
+    lastDuplicates.forEach(function(d) {
+      const key = rowKey(d);
+      if (!grouped[key]) {
+        grouped[key] = { date: d.date, player: d.player, reason: d.reason, amount: d.amount, count: 1 };
+      } else {
+        grouped[key].amount += d.amount;
+        grouped[key].count++;
+      }
+    });
+    let mergedCount = 0;
+    Object.keys(grouped).forEach(function(key) {
+      const g = grouped[key];
+      if (g.count > 1) {
+        const existing = rows.find(function(r) { return rowKey(r) === key; });
+        if (existing) {
+          existing.amount += g.amount;
+          mergedCount++;
+        }
+      }
+    });
+    lastDuplicates = [];
+    safeSet('dupNotice', 'style.display', 'none');
+    safeSet('mergeDupBtn', 'style.display', 'none');
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    saveToStorage();
+    refreshAll();
+    safeSet('okText', 'textContent', '✅ ' + mergedCount + ' energy duplicates merged (amounts summed).');
+    safeSet('okNotice', 'className', 'visible');
+    setTimeout(() => { safeSet('okNotice', 'className', ''); }, 4000);
+  }
+
+  // ==================== STATS & BALANCE MAP ====================
+  function computeStatsAndBalMap() {
+    const init = parseFloat(document.getElementById('initBal').value) || 0;
+    const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+      ? sortedRowsCache
+      : [...rows].sort((a, b) => a.date.localeCompare(b.date));
+
+    let dep = 0, wit = 0, net = 0;
+    let latestTime = 0;
+    let run = init;
+    const map = {};
+
+    sorted.forEach(r => {
+      if (r.amount > 0) dep += r.amount; else wit += r.amount;
+      const t = new Date(r.date.replace(' ', 'T')).getTime();
+      if (t > latestTime) latestTime = t;
+      run += r.amount;
+      map[rowKey(r)] = run;
+    });
+
+    net = dep + wit;
+    statsCache = { init, dep, wit, net, latestTime, rowCount: rows.length };
+    balMapCache = map;
+    sortedRowsCache = sorted;
+    return { map, stats: statsCache };
+  }
+
+  function recalc() {
+    if (!statsCache || statsCache.rowCount !== rows.length || balMapCache === null) {
+      computeStatsAndBalMap();
+    }
+    const s = statsCache;
+    const init = parseFloat(document.getElementById('initBal').value) || 0;
+
+    if (!s.latestTime) {
+      document.getElementById('st-bal').textContent = fmt(init);
+      document.getElementById('st-dep').textContent = '0';
+      document.getElementById('st-wit').textContent = '0';
+      document.getElementById('st-cnt').textContent = '0';
+      document.getElementById('st-net').textContent = '0';
+      document.getElementById('st-net').className = 'stat-value amber';
+      document.getElementById('st-net24').textContent = '0';
+      document.getElementById('st-net24').className = 'stat-value amber';
+      document.getElementById('st-netWeek').textContent = '0';
+      document.getElementById('st-netWeek').className = 'stat-value amber';
+      return;
+    }
+
+    const latestDate = new Date(s.latestTime);
+    const latestYm = latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0');
+    const latestDateStr = latestDate.getFullYear() + '-' + String(latestDate.getMonth()+1).padStart(2,'0') + '-' + String(latestDate.getDate()).padStart(2,'0');
+    const latestWeek = getWeekOfMonth(latestDateStr);
+    let net24 = 0, netWeek = 0;
+    sortedRowsCache.forEach(r => {
+      const rt = new Date(r.date.replace(' ', 'T')).getTime();
+      if (s.latestTime - rt <= 86400000) net24 += r.amount;
+      const rDate = new Date(r.date.replace(' ', 'T'));
+      const rYm = rDate.getFullYear() + '-' + String(rDate.getMonth()+1).padStart(2,'0');
+      const rWeek = getWeekOfMonth(r.date);
+      if (rYm === latestYm && rWeek === latestWeek) netWeek += r.amount;
+    });
+
+    const net = s.dep + s.wit;
+    document.getElementById('st-bal').textContent = fmt(init + net);
+    document.getElementById('st-dep').textContent = fmt(s.dep);
+    document.getElementById('st-wit').textContent = fmt(s.wit);
+    document.getElementById('st-cnt').textContent = rows.length;
+    const netEl = document.getElementById('st-net');
+    netEl.textContent = (net >= 0 ? '+' : '') + fmt(net);
+    netEl.className = 'stat-value ' + (net > 0 ? 'green' : net < 0 ? 'red' : 'amber');
+    const net24El = document.getElementById('st-net24');
+    net24El.textContent = (net24 >= 0 ? '+' : '') + fmt(net24);
+    net24El.className = 'stat-value ' + (net24 > 0 ? 'green' : net24 < 0 ? 'red' : 'amber');
+    const netWeekEl = document.getElementById('st-netWeek');
+    netWeekEl.textContent = (netWeek >= 0 ? '+' : '') + fmt(netWeek);
+    netWeekEl.className = 'stat-value ' + (netWeek > 0 ? 'green' : netWeek < 0 ? 'red' : 'amber');
+  }
+
+  function buildBalMap() {
+    if (balMapCache && statsCache && statsCache.rowCount === rows.length) {
+      return balMapCache;
+    }
+    computeStatsAndBalMap();
+    return balMapCache;
+  }
+
+  // ==================== FILTERS & TABLE ====================
+  function updateFilters() {
+    const version = rows.length + '_' + (rows[0] ? rows[0].id : '');
+    if (filterCache.version !== version) {
+      filterCache.players = [...new Set(rows.map(r => r.player))].sort();
+      filterCache.reasons = [...new Set(rows.map(r => r.reason))].sort();
+      filterCache.tags = [...new Set(rows.map(r => r.tag || '').filter(Boolean))].sort();
+      filterCache.currencies = [...new Set(rows.map(r => r.currency || 'Energy'))].sort();
+      filterCache.version = version;
+    }
+    const fp = document.getElementById('fPlayer'), fr = document.getElementById('fReason'), ft = document.getElementById('fTag'), fc = document.getElementById('fCurrency');
+    const pv = fp.value, rv = fr.value, tv = ft ? ft.value : '', cv = fc ? fc.value : '';
+    fp.innerHTML = '<option value="">All</option>' + filterCache.players.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+    fr.innerHTML = '<option value="">All</option>' + filterCache.reasons.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+    if (ft) ft.innerHTML = '<option value="">All</option>' + filterCache.tags.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
+    if (fc) fc.innerHTML = '<option value="">All</option>' + filterCache.currencies.map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
+    fp.value = pv; fr.value = rv; if (ft) ft.value = tv; if (fc) fc.value = cv;
+  }
+
+  function getFilteredRows() {
+    const fp = document.getElementById('fPlayer').value;
+    const fr = document.getElementById('fReason').value;
+    const ft = document.getElementById('fTag').value;
+    const fc = document.getElementById('fCurrency').value;
+    const fromVal = document.getElementById('fDateFrom').value;
+    const toVal = document.getElementById('fDateTo').value;
+    const sq = document.getElementById('fSearch').value.toLowerCase();
+
+    const fromTime = fromVal ? getTimestamp(fromVal.replace('T', ' ')) : 0;
+    const toTime = toVal ? getTimestamp(toVal.replace('T', ' ').substring(0, 10) + ' 23:59:59') : 0;
+
+    const data = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (fp && r.player !== fp) continue;
+      if (fr && r.reason !== fr) continue;
+      if (ft && (r.tag || '') !== ft) continue;
+      if (fc && (r.currency || 'Energy') !== fc) continue;
+      if (fromTime && getTimestamp(r.date) < fromTime) continue;
+      if (toTime && getTimestamp(r.date) > toTime) continue;
+      if (sq) {
+        const playerMatch = r.playerLc || r.player.toLowerCase();
+        const reasonMatch = r.reasonLc || r.reason.toLowerCase();
+        const tagMatch = (r.tag || '').toLowerCase();
+        if (!playerMatch.includes(sq) && !reasonMatch.includes(sq) && !tagMatch.includes(sq) && !r.date.includes(sq)) continue;
+      }
+      data.push(r);
+    }
+    return data;
+  }
+
+  function renderTable() {
+    if (!balMapCache) balMapCache = buildBalMap();
+    let data = getFilteredRows();
+
+    const rowIndexMap = new Map();
+    rows.forEach((row, index) => {
+      rowIndexMap.set(row.id, index);
+    });
+
+    data.sort((a, b) => {
+      let va, vb;
+      switch (currentSort.col) {
+        case 1: va = a.date; vb = b.date; break;
+        case 2: va = a.player; vb = b.player; break;
+        case 3: va = a.reason; vb = b.reason; break;
+        case 4: va = a.tag || ''; vb = b.tag || ''; break;
+        case 5: va = a.currency || 'Energy'; vb = b.currency || 'Energy'; break;
+        case 6: va = a.amount; vb = b.amount; break;
+        case 7: va = balMapCache[rowKey(a)]; vb = balMapCache[rowKey(b)]; break;
+        default: va = a.date; vb = b.date;
+      }
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return currentSort.dir === 'asc' ? va - vb : vb - va;
+      }
+      return currentSort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+
+    const total = data.length;
+    const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
+    if (currentPage > totalPages) currentPage = totalPages;
+    const start = (currentPage - 1) * rowsPerPage;
+    const pageData = data.slice(start, start + rowsPerPage);
+
+    document.getElementById('tbl-badge').textContent = rows.length + ' rows';
+    const tbody = document.getElementById('tblBody');
+    if (!total) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">No matching energy data found</td></tr>';
+      document.getElementById('pagination').className = 'pagination hidden';
+      return;
+    }
+    tbody.innerHTML = pageData.map((r, i) => {
+      const bal = balMapCache[rowKey(r)] ?? '';
+      const pill = r.reason.toLowerCase().includes('deposit') ? 'pill-dep' : r.reason.toLowerCase().includes('withdrawal') ? 'pill-wit' : 'pill-oth';
+      const checked = selectedIds.has(r.id) ? 'checked' : '';
+      const globalIdx = (rowIndexMap.get(r.id) !== undefined ? rowIndexMap.get(r.id) + 1 : start + i + 1);
+      return '<tr>' +
+        '<td class="cb-cell"><input type="checkbox" ' + checked + ' onchange="toggleSelect(\'' + r.id + '\', this)"></td>' +
+        '<td style="color:#aaa;font-size:11px">' + globalIdx + '</td>' +
+        '<td style="font-size:12px">' + escHtml(r.date) + '</td>' +
+        '<td style="font-weight:600">' + escHtml(r.player) + '</td>' +
+        '<td><span class="pill ' + pill + '">' + escHtml(r.reason) + '</span></td>' +
+        '<td>' + (r.tag ? '<span class="pill pill-oth" style="cursor:pointer" onclick="quickEditTag(\'' + r.id + '\')" title="Click to edit tag">' + escHtml(r.tag) + '</span>' : '<span style="color:#ccc;cursor:pointer;font-size:11px" onclick="quickEditTag(\'' + r.id + '\')">+ tag</span>') + '</td>' +
+        '<td><span class="pill pill-oth">' + escHtml(r.currency || 'Energy') + '</span></td>' +
+        '<td class="' + (r.amount>=0?'amount-pos':'amount-neg') + '">' + fmt(r.amount) + '</td>' +
+        '<td style="font-weight:600;font-size:12px">' + fmt(bal) + '</td>' +
+        '<td class="action-btns">' +
+          '<span onclick="editTransaction(\'' + r.id + '\')" title="Edit">✏️</span>' +
+          '<span onclick="deleteTransaction(\'' + r.id + '\')" title="Delete">🗑️</span>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+    renderPagination(total, totalPages, start);
+    updateBulkBar();
+  }
+
+  function renderPagination(total, totalPages, start) {
+    const container = document.getElementById('pagination');
+    if (totalPages <= 1) {
+      container.className = 'pagination hidden';
+      return;
+    }
+    container.className = 'pagination';
+    const from = start + 1;
+    const to = Math.min(start + rowsPerPage, total);
+    var html = '<span class="page-info">' + from + '-' + to + ' of ' + total + ' energy transactions</span>';
+    html += '<div class="page-btns">';
+    html += '<button onclick="goPage(' + (currentPage - 1) + ')" ' + (currentPage <= 1 ? 'disabled' : '') + '>‹</button>';
+    var maxVisible = 7;
+    var startPage = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+    var endPage = Math.min(totalPages, startPage + maxVisible - 1);
+    if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+    if (startPage > 1) {
+      html += '<button onclick="goPage(1)">1</button>';
+      if (startPage > 2) html += '<span style="padding:0 4px;color:#94a3b8">…</span>';
+    }
+    for (var p = startPage; p <= endPage; p++) {
+      html += '<button onclick="goPage(' + p + ')" class="' + (p === currentPage ? 'active' : '') + '">' + p + '</button>';
+    }
+    if (endPage < totalPages) {
+      if (endPage < totalPages - 1) html += '<span style="padding:0 4px;color:#94a3b8">…</span>';
+      html += '<button onclick="goPage(' + totalPages + ')">' + totalPages + '</button>';
+    }
+    html += '<button onclick="goPage(' + (currentPage + 1) + ')" ' + (currentPage >= totalPages ? 'disabled' : '') + '>›</button>';
+    html += '<select onchange="changeRPP(this.value)" style="margin-left:8px">';
+    [25, 50, 100, 250, 500].forEach(function(n) {
+      html += '<option value="' + n + '" ' + (n === rowsPerPage ? 'selected' : '') + '>' + n + '/page</option>';
+    });
+    html += '</select></div>';
+    container.innerHTML = html;
+  }
+
+  function goPage(p) {
+    var data = getFilteredRows();
+    var totalPages = Math.max(1, Math.ceil(data.length / rowsPerPage));
+    if (p < 1 || p > totalPages) return;
+    currentPage = p;
+    renderTable();
+    document.querySelector('.tbl-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function changeRPP(n) {
+    rowsPerPage = parseInt(n, 10);
+    currentPage = 1;
+    renderTable();
+  }
+
+  // ==================== CRUD ====================
+  function deleteTransaction(id) {
+    if (!confirm('🗑️ Delete this energy transaction permanently?')) return;
+    const tx = rows.find(r => r.id === id);
+    if (!tx) return;
+    const index = rows.indexOf(tx);
+    lastDeleted = { ...tx, _originalIndex: index };
+    existingKeysCache.delete(rowKey(tx));
+    dirtyIds.deleted.add(tx.id);
+    rows = rows.filter(r => r.id !== id);
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    logAudit('delete', { id: tx.id, player: tx.player, reason: tx.reason, amount: tx.amount, date: tx.date });
+    saveToStorage();
+    refreshAll();
+    showUndoToast();
+  }
+
+  function showUndoToast() {
+    if (undoTimeout) clearTimeout(undoTimeout);
+    document.getElementById('undoToastText').innerHTML = `Energy transaction deleted. <strong>Undo?</strong>`;
+    const toast = document.getElementById('undoToast');
+    toast.style.display = 'flex';
+    toast.classList.add('show');
+    undoTimeout = setTimeout(() => hideToast('undoToast'), 8000);
+  }
+
+  function undoDelete() {
+    if (lastDeleted) {
+      if (!lastDeleted.playerLc) lastDeleted.playerLc = lastDeleted.player.toLowerCase();
+      if (!lastDeleted.reasonLc) lastDeleted.reasonLc = lastDeleted.reason.toLowerCase();
+      const index = lastDeleted._originalIndex;
+      if (index !== undefined && index >= 0 && index <= rows.length) {
+        rows.splice(index, 0, lastDeleted);
+      } else {
+        rows.push(lastDeleted);
+      }
+      existingKeysCache.add(rowKey(lastDeleted));
+      lastDeleted = null;
+    } else if (lastBulkDeleted) {
+      lastBulkDeleted.forEach(function(r) {
+        if (!r.playerLc) r.playerLc = r.player.toLowerCase();
+        if (!r.reasonLc) r.reasonLc = r.reason.toLowerCase();
+      });
+      rows = rows.concat(lastBulkDeleted);
+      lastBulkDeleted.forEach(function(r) { existingKeysCache.add(rowKey(r)); });
+      lastBulkDeleted = null;
+    } else {
+      return;
+    }
+    hideToast('undoToast');
+    if (undoTimeout) clearTimeout(undoTimeout);
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    saveToStorage();
+    refreshAll();
+  }
+
+  function editTransaction(id) {
+    const tx = rows.find(r => r.id === id);
+    if (!tx) return;
+    editingId = id;
+    document.getElementById('editDate').value = tx.date.replace(' ', 'T').substring(0, 16);
+    document.getElementById('editPlayer').value = tx.player;
+    document.getElementById('editReason').value = tx.reason;
+    document.getElementById('editTag').value = tx.tag || '';
+    document.getElementById('editCurrency').value = tx.currency || 'Energy';
+    document.getElementById('editAmount').value = tx.amount;
+    document.getElementById('editModal').style.display = 'flex';
+  }
+
+  function saveEdit() {
+    if (!editingId) return;
+    const tx = rows.find(r => r.id === editingId);
+    if (!tx) return;
+    const newDate = document.getElementById('editDate').value.trim().replace('T', ' ');
+    const newPlayer = document.getElementById('editPlayer').value.trim();
+    const newReason = document.getElementById('editReason').value.trim();
+    const newTag = document.getElementById('editTag').value.trim();
+    const newCurrency = document.getElementById('editCurrency').value;
+    const newAmount = document.getElementById('editAmount').value;
+    const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
+    if (!newDate) return showEditError('Date cannot be empty!');
+    if (!newPlayer) return showEditError('Player name cannot be empty!');
+    if (!newReason) return showEditError('Reason cannot be empty!');
+    if (!isValidDate(dateStr)) return showEditError('Invalid date format!');
+    if (newAmount === '' || newAmount === null || newAmount === undefined) return showEditError('Amount cannot be empty! Use 0 for neutral transactions.');
+    const amountNum = parseFloat(newAmount);
+    if (isNaN(amountNum)) return showEditError('Amount must be a number!');
+    if (!isFinite(amountNum)) return showEditError('Amount is invalid (Infinity)!');
+    if (Math.abs(amountNum) > 9e15) return showEditError('Amount is too large! Max: 9,000,000,000,000,000');
+
+    const oldValues = {
+      id: tx.id,
+      date: tx.date,
+      player: tx.player,
+      reason: tx.reason,
+      tag: tx.tag,
+      currency: tx.currency,
+      amount: tx.amount,
+      playerLc: tx.playerLc,
+      reasonLc: tx.reasonLc
+    };
+
+    tx.date = dateStr;
+    tx.player = newPlayer;
+    tx.reason = newReason;
+    tx.tag = newTag || '';
+    tx.currency = newCurrency;
+    tx.amount = amountNum;
+    tx.playerLc = newPlayer.toLowerCase();
+    tx.reasonLc = newReason.toLowerCase();
+
+    logAudit('edit', {
+      id: tx.id,
+      oldPlayer: oldValues.player, newPlayer: newPlayer,
+      oldReason: oldValues.reason, newReason: newReason,
+      oldTag: oldValues.tag, newTag: newTag,
+      oldCurrency: oldValues.currency, newCurrency: newCurrency,
+      oldAmount: oldValues.amount, newAmount: amountNum
+    });
+    closeModal();
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    saveToStorage();
+    refreshAll();
+  }
+
+  function showEditError(msg) {
+    const errEl = document.getElementById('editError');
+    errEl.textContent = '❌ ' + msg;
+    errEl.style.display = 'block';
+    setTimeout(() => { errEl.style.display = 'none'; }, 4000);
+  }
+
+  function closeModal() {
+    document.getElementById('editModal').style.display = 'none';
+    const errEl = document.getElementById('editError');
+    if (errEl) errEl.style.display = 'none';
+    editingId = null;
+  }
+
+  function openAddModal() {
+    const now = new Date();
+    const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    document.getElementById('addDate').value = local;
+    document.getElementById('addPlayer').value = '';
+    document.getElementById('addReason').value = '';
+    document.getElementById('addTag').value = '';
+    document.getElementById('addCurrency').value = 'Energy';
+    document.getElementById('addAmount').value = '';
+    document.getElementById('addError').style.display = 'none';
+    document.getElementById('addModal').style.display = 'flex';
+  }
+
+  function closeAddModal() {
+    document.getElementById('addModal').style.display = 'none';
+    document.getElementById('addError').style.display = 'none';
+  }
+
+  function showAddError(msg) {
+    const errEl = document.getElementById('addError');
+    errEl.textContent = '❌ ' + msg;
+    errEl.style.display = 'block';
+    setTimeout(() => { errEl.style.display = 'none'; }, 4000);
+  }
+
+  function saveAdd() {
+    const newDate = document.getElementById('addDate').value.trim().replace('T', ' ');
+    const newPlayer = document.getElementById('addPlayer').value.trim();
+    const newReason = document.getElementById('addReason').value.trim();
+    const newTag = document.getElementById('addTag').value.trim();
+    const newCurrency = document.getElementById('addCurrency').value;
+    const newAmount = document.getElementById('addAmount').value;
+    const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
+    if (!newDate) return showAddError('Date cannot be empty!');
+    if (!newPlayer) return showAddError('Player name cannot be empty!');
+    if (!newReason) return showAddError('Reason cannot be empty!');
+    if (!isValidDate(dateStr)) return showAddError('Invalid date format!');
+    if (newAmount === '' || newAmount === null || newAmount === undefined) return showAddError('Amount cannot be empty! Use 0 for neutral transactions.');
+    const amountNum = parseFloat(newAmount);
+    if (isNaN(amountNum)) return showAddError('Amount must be a number!');
+    if (!isFinite(amountNum)) return showAddError('Amount is invalid (Infinity)!');
+    if (Math.abs(amountNum) > 9e15) return showAddError('Amount is too large! Max: 9,000,000,000,000,000');
+    const entry = { date: dateStr, player: newPlayer, reason: newReason, tag: newTag || '', currency: newCurrency, amount: amountNum, id: generateId(), playerLc: newPlayer.toLowerCase(), reasonLc: newReason.toLowerCase() };
+    rows.push(entry);
+    existingKeysCache.add(rowKey(entry));
+    dirtyIds.added.add(entry.id);
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    logAudit('add', { id: entry.id, player: newPlayer, reason: newReason, tag: newTag || '', amount: amountNum, date: dateStr });
+    closeAddModal();
+    saveToStorage();
+    refreshAll();
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = '✅ 1 energy transaction added.';
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 3000);
+  }
+
+  function quickEditTag(id) {
+    var tx = rows.find(function(r) { return r.id === id; });
+    if (!tx) return;
+    var newTag = prompt('Edit tag for ' + tx.player + ' (leave empty to delete):', tx.tag || '');
+    if (newTag === null) return;
+    tx.tag = newTag.trim();
+    balMapCache = null;
+    saveToStorage();
+    refreshAll();
+  }
+
+  // ==================== PERIOD & MONTHLY ====================
+  function buildPeriodData() {
+    const grouped = {};
+    const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+      ? [...sortedRowsCache].reverse()
+      : [...rows].sort((a,b) => b.date.localeCompare(a.date));
+    sorted.forEach(r => {
+      const ymd = r.date.substring(0,10);
+      const ym = r.date.substring(0,7);
+      const week = getWeekOfMonth(r.date);
+      const weekKey = ym + '-W' + week;
+      if (!grouped[weekKey]) grouped[weekKey] = { ym, week, net:0, dep:0, wit:0, days:{} };
+      if (!grouped[weekKey].days[ymd]) grouped[weekKey].days[ymd] = { net:0, dep:0, wit:0 };
+      grouped[weekKey].net += r.amount;
+      grouped[weekKey].days[ymd].net += r.amount;
+      if (r.amount > 0) {
+        grouped[weekKey].dep += r.amount;
+        grouped[weekKey].days[ymd].dep += r.amount;
+      } else {
+        grouped[weekKey].wit += r.amount;
+        grouped[weekKey].days[ymd].wit += r.amount;
+      }
+    });
+    return grouped;
+  }
+
+  function renderPeriod() {
+    const grouped = buildPeriodData();
+    const container = document.getElementById('periodGrid');
+    const keys = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
+    if (!keys.length) {
+      container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">No energy data yet</div>';
+      return;
+    }
+    container.innerHTML = keys.map(k => {
+      const w = grouped[k];
+      const dayKeys = Object.keys(w.days).sort((a,b) => b.localeCompare(a));
+      const daysHtml = dayKeys.map(d => {
+        const dayData = w.days[d];
+        const netCls = dayData.net >= 0 ? 'green' : 'red';
+        return `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px dashed #eee;">
+            <span>⚡ ${d}</span>
+            <span class="${netCls}" style="font-weight:600">${dayData.net >= 0 ? '+' : ''}${fmt(dayData.net)}</span>
+        </div>`;
+      }).join('');
+      const wNetCls = w.net >= 0 ? 'green' : 'red';
+      return `<div class="month-card">
+        <div class="month-label">⚡ Energy - Month ${w.ym} - Week ${w.week}</div>
+        <div class="month-rows" style="margin-bottom:8px">
+          <div class="month-row"><span class="month-row-label">Total In</span><span class="month-row-val green">+${fmt(w.dep)}</span></div>
+          <div class="month-row"><span class="month-row-label">Total Out</span><span class="month-row-val red">${fmt(w.wit)}</span></div>
+          <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">This Week Net</span><span class="month-row-val ${wNetCls}" style="font-size:13px">${w.net >= 0 ? '+' : ''}${fmt(w.net)}</span></div>
+        </div>
+        <div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px;margin-top:8px">Daily Breakdown:</div>
+        ${daysHtml}
+      </div>`;
+    }).join('');
+  }
+
+  function buildMonthlyData() {
+    const init = parseFloat(document.getElementById('initBal').value) || 0;
+    const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+      ? sortedRowsCache
+      : [...rows].sort((a,b) => a.date.localeCompare(b.date));
+    const monthOrder = [], monthMap = {};
+    let run = init;
+    sorted.forEach(r => {
+      const ym = r.date.substring(0,7);
+      if (!monthMap[ym]) {
+        monthMap[ym] = {ym, openBal: run, dep:0, wit:0, count:0, closeBal:run};
+        monthOrder.push(ym);
+      }
+      run += r.amount;
+      if (r.amount > 0) monthMap[ym].dep += r.amount; else monthMap[ym].wit += r.amount;
+      monthMap[ym].count++;
+      monthMap[ym].closeBal = run;
+    });
+    return {monthOrder, monthMap};
+  }
+
+  function renderMonthly() {
+    const {monthOrder, monthMap} = buildMonthlyData();
+    const grid = document.getElementById('monthlyGrid');
+    if (!monthOrder.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">No energy data yet</div>';
+      return;
+    }
+    grid.innerHTML = monthOrder.map(ym => {
+      const m = monthMap[ym];
+      const net = m.dep + m.wit;
+      const netCls = net >= 0 ? 'green' : 'red';
+      return `<div class="month-card">
+        <div class="month-label">⚡ Energy ${monthLabel(ym)}<span class="month-cnt">${m.count} transactions</span></div>
+        <div class="month-rows">
+          <div class="month-row"><span class="month-row-label">Starting Balance (1st)</span><span class="month-row-val">${fmt(m.openBal)}</span></div>
+          <div class="month-row"><span class="month-row-label">Total In</span><span class="month-row-val green">+${fmt(m.dep)}</span></div>
+          <div class="month-row"><span class="month-row-label">Total Out</span><span class="month-row-val red">${fmt(m.wit)}</span></div>
+          <div class="month-row"><span class="month-row-label">Monthly Net</span><span class="month-row-val ${netCls}">${net>=0?'+':''}${fmt(net)}</span></div>
+        </div>
+        <hr class="month-divider">
+        <div class="month-row"><span class="month-row-label" style="font-weight:600">Ending Balance</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
+      </div>`;
+    }).join('');
+  }
+
+  // ==================== PLAYER STATS ====================
+  function buildPlayerData() {
+    const players = {};
+    rows.forEach(r => {
+      const name = r.player;
+      if (!players[name]) {
+        players[name] = {
+          name: name,
+          dep: 0,
+          wit: 0,
+          net: 0,
+          count: 0,
+          firstTx: r.date,
+          lastTx: r.date,
+          transactions: []
+        };
+      }
+      if (r.amount > 0) players[name].dep += r.amount;
+      else players[name].wit += r.amount;
+      players[name].net += r.amount;
+      players[name].count++;
+      if (r.date < players[name].firstTx) players[name].firstTx = r.date;
+      if (r.date > players[name].lastTx) players[name].lastTx = r.date;
+      players[name].transactions.push(r);
+    });
+    return Object.values(players);
+  }
+
+  function renderPlayerStats() {
+    const container = document.getElementById('playerGrid');
+    const searchEl = document.getElementById('playerSearch');
+    const sortEl = document.getElementById('playerRecapSort');
+    const orderEl = document.getElementById('playerRecapOrder');
+    
+    let players = buildPlayerData();
+    if (!players.length) {
+      container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">No player data yet</div>';
+      return;
+    }
+    
+    // Apply search filter
+    const searchValue = searchEl ? searchEl.value.toLowerCase() : '';
+    if (searchValue) {
+      players = players.filter(p => p.name.toLowerCase().includes(searchValue));
+    }
+    
+    // Sort
+    const sortBy = sortEl.value;
+    const order = orderEl.value === 'desc' ? -1 : 1;
+    players.sort((a, b) => {
+      let va, vb;
+      switch (sortBy) {
+        case 'net': va = a.net; vb = b.net; break;
+        case 'dep': va = a.dep; vb = b.dep; break;
+        case 'wit': va = a.wit; vb = b.wit; break;
+        case 'count': va = a.count; vb = b.count; break;
+        case 'name': va = a.name; vb = b.name; break;
+        default: va = a.net; vb = b.net;
+      }
+      if (typeof va === 'string') {
+        return order * va.localeCompare(vb);
+      }
+      return order * (va - vb);
+    });
+    
+    container.innerHTML = players.map((p, idx) => {
+      const netCls = p.net >= 0 ? 'green' : 'red';
+      const initial = p.name.charAt(0).toUpperCase();
+      return `<div class="player-card-compact" onclick="showPlayerDetail('${escAttr(p.name)}')">
+        <div class="player-card-header-compact">
+          <div class="player-avatar-small">${initial}</div>
+          <div class="player-name-small" title="${escHtml(p.name)}">${escHtml(p.name)}</div>
+          <div class="player-rank-small">#${idx + 1}</div>
+        </div>
+        <div class="player-stats-mini">
+          <div class="player-stat-mini">
+            <div class="player-stat-mini-label">Deposit</div>
+            <div class="player-stat-mini-value green">+${fmt(p.dep)}</div>
+          </div>
+          <div class="player-stat-mini">
+            <div class="player-stat-mini-label">Withdrawal</div>
+            <div class="player-stat-mini-value red">${fmt(p.wit)}</div>
+          </div>
+          <div class="player-stat-mini">
+            <div class="player-stat-mini-label">Net</div>
+            <div class="player-stat-mini-value ${netCls}">${p.net >= 0 ? '+' : ''}${fmt(p.net)}</div>
+          </div>
+          <div class="player-stat-mini">
+            <div class="player-stat-mini-label">Tx Count</div>
+            <div class="player-stat-mini-value amber">${p.count}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function updatePlayerFilter() {
+    // This function is no longer needed since we use search instead
+    // Kept for backward compatibility
+  }
+
+  function switchRecapTab(type) {
+    // Hide all recap panels
+    const dailyPanel = document.getElementById('recapDaily');
+    const weeklyPanel = document.getElementById('recapWeekly');
+    const monthlyPanel = document.getElementById('recapMonthly');
+
+    if (dailyPanel) dailyPanel.style.display = 'none';
+    if (weeklyPanel) weeklyPanel.style.display = 'none';
+    if (monthlyPanel) monthlyPanel.style.display = 'none';
+
+    // Update tab buttons
+    document.querySelectorAll('[data-recap]').forEach(btn => {
+      btn.classList.remove('active');
+    });
+    const activeBtn = document.querySelector(`[data-recap="${type}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+
+    // Show selected panel and render data immediately
+    if (type === 'daily' && dailyPanel) {
+      dailyPanel.style.display = 'block';
+      renderDailyRecap();
+    } else if (type === 'weekly' && weeklyPanel) {
+      weeklyPanel.style.display = 'block';
+      renderPeriod();
+    } else if (type === 'monthly' && monthlyPanel) {
+      monthlyPanel.style.display = 'block';
+      renderMonthly();
+    }
+  }
+
+  function initRecapTabs() {
+    // Initialize recap tabs - show daily by default and render all data
+    const dailyPanel = document.getElementById('recapDaily');
+    if (dailyPanel) {
+      dailyPanel.style.display = 'block';
+      renderDailyRecap();
+    }
+
+    // Pre-render weekly and monthly data even though they're hidden
+    // This ensures data is ready when user clicks those tabs
+    renderPeriod();
+    renderMonthly();
+  }
+
+  function renderDailyRecap() {
+    // Build daily recap data
+    const grouped = {};
+    const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+      ? [...sortedRowsCache].reverse()
+      : [...rows].sort((a,b) => b.date.localeCompare(a.date));
+    
+    sorted.forEach(r => {
+      const ymd = r.date.substring(0,10);
+      if (!grouped[ymd]) grouped[ymd] = { date: ymd, net: 0, dep: 0, wit: 0, count: 0 };
+      grouped[ymd].net += r.amount;
+      grouped[ymd].count++;
+      if (r.amount > 0) grouped[ymd].dep += r.amount;
+      else grouped[ymd].wit += r.amount;
+    });
+    
+    const container = document.getElementById('dailyGrid');
+    const keys = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
+    
+    if (!keys.length) {
+      container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">No data yet</div>';
+      return;
+    }
+    
+    container.innerHTML = keys.map(date => {
+      const d = grouped[date];
+      const netCls = d.net >= 0 ? 'green' : 'red';
+      return `<div class="month-card">
+        <div class="month-label">📆 ${date}</div>
+        <div class="month-rows">
+          <div class="month-row"><span class="month-row-label">Total In</span><span class="month-row-val green">+${fmt(d.dep)}</span></div>
+          <div class="month-row"><span class="month-row-label">Total Out</span><span class="month-row-val red">${fmt(d.wit)}</span></div>
+          <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">Net</span><span class="month-row-val ${netCls}" style="font-size:13px">${d.net >= 0 ? '+' : ''}${fmt(d.net)}</span></div>
+          <div style="font-size:10px;color:#94a3b8;margin-top:4px;text-align:right">${d.count} transactions</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function showPlayerDetail(playerName) {
+    const players = buildPlayerData();
+    const player = players.find(p => p.name === playerName);
+    if (!player) return;
+    
+    const modal = document.getElementById('playerDetailModal');
+    const title = document.getElementById('playerDetailTitle');
+    const content = document.getElementById('playerDetailContent');
+    
+    title.textContent = `👤 ${playerName}`;
+    
+    const netCls = player.net >= 0 ? 'green' : 'red';
+    const initial = playerName.charAt(0).toUpperCase();
+    
+    let html = `
+      <div class="player-detail-header">
+        <div class="player-detail-avatar">${initial}</div>
+        <div class="player-detail-info">
+          <div class="player-detail-name">${escHtml(playerName)}</div>
+          <div style="font-size:12px;color:#64748b">Player Statistics</div>
+        </div>
+      </div>
+      <div class="player-detail-stats">
+        <div class="player-detail-stat">
+          <div class="player-detail-stat-label">Total Deposit</div>
+          <div class="player-detail-stat-value green">+${fmt(player.dep)}</div>
+        </div>
+        <div class="player-detail-stat">
+          <div class="player-detail-stat-label">Total Withdrawal</div>
+          <div class="player-detail-stat-value red">${fmt(player.wit)}</div>
+        </div>
+        <div class="player-detail-stat">
+          <div class="player-detail-stat-label">Net Amount</div>
+          <div class="player-detail-stat-value ${netCls}">${player.net >= 0 ? '+' : ''}${fmt(player.net)}</div>
+        </div>
+        <div class="player-detail-stat">
+          <div class="player-detail-stat-label">Transactions</div>
+          <div class="player-detail-stat-value amber">${player.count}</div>
+        </div>
+      </div>
+      <div class="player-detail-transactions">
+        <h4>📋 Transaction History (${player.count})</h4>
+        <table class="player-detail-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Date & Time</th>
+              <th>Reason</th>
+              <th>Tag</th>
+              <th>Currency</th>
+              <th>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+    
+    const sortedTx = player.transactions.sort((a, b) => b.date.localeCompare(a.date));
+    sortedTx.forEach((tx, idx) => {
+      const amtCls = tx.amount >= 0 ? 'green' : 'red';
+      html += `<tr>
+        <td>${idx + 1}</td>
+        <td>${escHtml(tx.date)}</td>
+        <td>${escHtml(tx.reason)}</td>
+        <td>${tx.tag ? escHtml(tx.tag) : '-'}</td>
+        <td>${escHtml(tx.currency || 'Energy')}</td>
+        <td class="${amtCls}" style="font-weight:600">${tx.amount >= 0 ? '+' : ''}${fmt(tx.amount)}</td>
+      </tr>`;
+    });
+    
+    html += `
+          </tbody>
+        </table>
+      </div>
+    `;
+    
+    content.innerHTML = html;
+    modal.style.display = 'flex';
+  }
+
+  function closePlayerDetail() {
+    document.getElementById('playerDetailModal').style.display = 'none';
+  }
+
+  // ==================== CHART ====================
+  function renderChart() {
+    // Chart feature has been removed in V1.1
+    // This function is kept for backward compatibility but does nothing
+    return;
+  }
+
+  function shortNum(n) {
+    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return Math.round(n).toString();
+  }
+
+  // ==================== SORT ====================
+  function sortTable(col) {
+    if (currentSort.col === col) {
+      currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      currentSort.col = col;
+      currentSort.dir = 'desc';
+    }
+    document.getElementById('fSort').value = currentSort.dir;
+    applySortClasses();
+    renderTable();
+  }
+
+  function applySort(dir) {
+    currentSort.dir = dir;
+    applySortClasses();
+    renderTable();
+  }
+
+  function applySortClasses() {
+    document.querySelectorAll('th.sortable').forEach(function(th) {
+      th.classList.remove('sort-active', 'asc', 'desc');
+      if (parseInt(th.dataset.col) === currentSort.col) {
+        th.classList.add('sort-active', currentSort.dir);
+      }
+    });
+  }
+
+  // ==================== DOWNLOAD EXCEL ====================
+  function autoDownloadExcel() {
+    if (typeof XLSX === 'undefined') {
+      return alert('⚠️ XLSX library (SheetJS) not loaded. Ensure internet connection is available.\n\nAlternative: Export CSV.');
+    }
+    showLoading('Creating Excel...');
+    setTimeout(() => {
+      const wb = XLSX.utils.book_new();
+      const init = parseFloat(document.getElementById('initBal').value) || 0;
+      const filtered = getFilteredRows();
+      const exportRows = filtered.length > 0 ? filtered : rows;
+      const balMap = balMapCache || buildBalMap();
+      const sorted = [...exportRows].sort((a,b) => a.date.localeCompare(b.date));
+      const txAoa = [['#','Date & Time','Player','Reason','Amount','Running Balance']];
+      sorted.forEach((r,i) => txAoa.push([i+1, r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? '']));
+      const ws1 = XLSX.utils.aoa_to_sheet(txAoa);
+      ws1['!cols'] = [{wch:5},{wch:22},{wch:16},{wch:14},{wch:14},{wch:18}];
+      XLSX.utils.book_append_sheet(wb, ws1, 'Energy Log');
+
+      const periodData = buildPeriodData();
+      const pKeys = Object.keys(periodData).sort((a,b) => b.localeCompare(a));
+      const pAoa = [['Month - Week','Date / Period','Total In','Total Out','Net']];
+      pKeys.forEach(k => {
+        const w = periodData[k];
+        pAoa.push([`Month ${w.ym} - Week ${w.week}`, 'Weekly', w.dep, w.wit, w.net]);
+        const dKeys = Object.keys(w.days).sort((a,b)=>b.localeCompare(a));
+        dKeys.forEach(d => {
+          const dayData = w.days[d];
+          pAoa.push(['', d, dayData.dep, dayData.wit, dayData.net]);
+        });
+      });
+      const wsP = XLSX.utils.aoa_to_sheet(pAoa);
+      wsP['!cols'] = [{wch:25},{wch:18},{wch:15},{wch:15},{wch:15}];
+      XLSX.utils.book_append_sheet(wb, wsP, 'Weekly & Daily Recap');
+
+      const {monthOrder, monthMap} = buildMonthlyData();
+      const mAoa = [['Month','Starting Balance (1st)','Total In','Total Out','Net','Ending Balance','Transaction Count']];
+      monthOrder.forEach(ym => {
+        const m = monthMap[ym];
+        mAoa.push([monthLabel(ym), m.openBal, m.dep, m.wit, m.dep+m.wit, m.closeBal, m.count]);
+      });
+      const totalDep = monthOrder.reduce((s,ym) => s + monthMap[ym].dep, 0);
+      const totalWit = monthOrder.reduce((s,ym) => s + monthMap[ym].wit, 0);
+      mAoa.push(['TOTAL','',''+totalDep,''+totalWit,''+(totalDep+totalWit),'',''+rows.length]);
+      const ws2 = XLSX.utils.aoa_to_sheet(mAoa);
+      ws2['!cols'] = [{wch:12},{wch:20},{wch:16},{wch:16},{wch:14},{wch:16},{wch:18}];
+      XLSX.utils.book_append_sheet(wb, ws2, 'Monthly Recap');
+
+      const now = new Date();
+      const ws3 = XLSX.utils.aoa_to_sheet([
+        ['Syphon Energy Guild — Albion Online ' + APP_VERSION],
+        ['Generated', now.toLocaleString('en-US')],
+        ['Initial Energy Balance', init],
+        ['Total Energy Transactions', rows.length],
+        ['Filtered', filtered.length > 0 ? filtered.length : rows.length],
+        ['Current Energy Balance', init + rows.reduce((s,r) => s + r.amount, 0)]
+      ]);
+      XLSX.utils.book_append_sheet(wb, ws3, 'Info');
+
+      const ts = now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
+      const suffix = filtered.length > 0 && filtered.length < rows.length ? '_filtered' : '';
+      const fname = `syphon_energy${suffix}_${ts}.xlsx`;
+      XLSX.writeFile(wb, fname);
+
+      hideLoading();
+      const toast = document.getElementById('dlToast');
+      document.getElementById('dlToastText').textContent = `${fname} downloaded! (${exportRows.length} energy tx)`;
+      toast.classList.add('show');
+      setTimeout(() => hideToast('dlToast'), 3500);
+    }, 50);
+  }
+
+  // ==================== EXPORT CSV ====================
+  function exportCSV() {
+    if (!rows.length) return alert('No energy data');
+    const filtered = getFilteredRows();
+    const exportRows = filtered.length > 0 ? filtered : rows;
+    const balMap = balMapCache || buildBalMap();
+    const csvContent = [
+      ['Date & Time','Player','Reason','Amount','Running Balance'],
+      ...exportRows.map(r => [r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? ''])
+    ].map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `syphon_energy${filtered.length > 0 && filtered.length < rows.length ? '_filtered' : ''}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').innerHTML = `✅ CSV energy downloaded! (${exportRows.length} tx)`;
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 3000);
+  }
+
+  function exportPDF() {
+    if (typeof XLSX === 'undefined') {
+      return alert('⚠️ XLSX library (SheetJS) not loaded. Ensure internet connection is available.');
+    }
+    if (!rows.length) return alert('No energy data');
+    const filtered = getFilteredRows();
+    const exportRows = filtered.length > 0 ? filtered : rows;
+    const balMap = balMapCache || buildBalMap();
+    const init = parseFloat(document.getElementById('initBal').value) || 0;
+    const sorted = [...exportRows].sort((a, b) => a.date.localeCompare(b.date));
+    const totalDep = exportRows.reduce(function(s, r) { return s + (r.amount > 0 ? r.amount : 0); }, 0);
+    const totalWit = exportRows.reduce(function(s, r) { return s + (r.amount < 0 ? r.amount : 0); }, 0);
+    const net = totalDep + totalWit;
+
+    var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Syphon Energy Report</title>';
+    html += '<style>';
+    html += '@page{margin:1.5cm}';
+    html += 'body{font-family:Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:0}';
+    html += '.rpt-header{text-align:center;border-bottom:2px solid #7c3aed;padding-bottom:10px;margin-bottom:16px}';
+    html += '.rpt-header h1{font-size:16px;color:#7c3aed;margin:0}';
+    html += '.rpt-header p{font-size:10px;color:#64748b;margin:4px 0 0}';
+    html += '.rpt-summary{display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap}';
+    html += '.rpt-stat{flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px}';
+    html += '.rpt-stat-label{font-size:9px;color:#94a3b8;text-transform:uppercase}';
+    html += '.rpt-stat-value{font-size:14px;font-weight:700}';
+    html += '.green{color:#059669}.red{color:#dc2626}.amber{color:#d97706}';
+    html += 'table{width:100%;border-collapse:collapse;margin-bottom:16px}';
+    html += 'th{background:#f1f5f9;text-align:left;padding:6px 8px;font-size:9px;color:#64748b;border-bottom:1px solid #e2e8f0}';
+    html += 'td{padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:10px}';
+    html += 'tr:nth-child(even){background:#fafafa}';
+    html += '.amount-pos{color:#059669;font-weight:600}.amount-neg{color:#dc2626;font-weight:600}';
+    html += '.rpt-footer{font-size:9px;color:#94a3b8;text-align:center;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:8px}';
+    html += '</style></head><body>';
+
+    html += '<div class="rpt-header"><h1>⚡ Syphon Energy Guild — Albion Online</h1>';
+    html += '<p>Energy Report: ' + new Date().toLocaleString('en-US') + ' | ' + sorted.length + ' transactions</p></div>';
+
+    html += '<div class="rpt-summary">';
+    html += '<div class="rpt-stat"><div class="rpt-stat-label">Starting Energy Balance</div><div class="rpt-stat-value">' + fmt(init) + '</div></div>';
+    html += '<div class="rpt-stat"><div class="rpt-stat-label">Total In</div><div class="rpt-stat-value green">+' + fmt(totalDep) + '</div></div>';
+    html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Out</div><div class="rpt-stat-value red">' + fmt(totalWit) + '</div></div>';
+    html += '<div class="rpt-stat"><div class="rpt-stat-label">Energy Net</div><div class="rpt-stat-value ' + (net >= 0 ? 'green' : 'red') + '">' + (net >= 0 ? '+' : '') + fmt(net) + '</div></div>';
+    html += '<div class="rpt-stat"><div class="rpt-stat-label">Ending Energy Balance</div><div class="rpt-stat-value amber">' + fmt(init + net) + '</div></div>';
+    html += '</div>';
+
+    html += '<table><thead><tr><th>#</th><th>Date</th><th>Player</th><th>Reason</th><th>Amount</th><th>Balance</th></tr></thead><tbody>';
+    sorted.forEach(function(r, i) {
+      var bal = balMap[rowKey(r)] ?? '';
+      var cls = r.amount >= 0 ? 'amount-pos' : 'amount-neg';
+      html += '<tr><td>' + (i + 1) + '</td><td>' + escHtml(r.date) + '</td><td>' + escHtml(r.player) + '</td><td>' + escHtml(r.reason) + '</td><td class="' + cls + '">' + fmt(r.amount) + '</td><td>' + fmt(bal) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+
+    html += '<div class="rpt-footer">⚡ Syphon Energy V1.1 — Generated ' + new Date().toLocaleString('en-US') + '</div>';
+    html += '</body></html>';
+
+    var win = window.open('', '_blank');
+    if (!win) return alert('⚠️ Pop-up blocked. Allow pop-ups for PDF export.');
+    win.document.write(html);
+    win.document.close();
+    win.onload = function() { win.print(); };
+  }
+
+  // ==================== TAB SWITCH ====================
+  function switchTab(n) {
+    // Ignore if NaN (sub-tab buttons don't have data-tab)
+    if (isNaN(n)) return;
+
+    document.querySelectorAll('.tab-btn[data-tab]').forEach((b, i) => b.classList.toggle('active', i === n));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const panel = document.getElementById('tab-' + n);
+    if (panel) panel.classList.add('active');
+
+    // When switching to Recap tab (index 1), initialize recap data
+    if (n === 1) {
+      initRecapTabs();
+    }
+  }
+
+  // ==================== BULK SELECT & DELETE ====================
+  function toggleSelect(id, cb) {
+    if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+    updateBulkBar();
+  }
+
+  function toggleSelectAll(cb) {
+    const filtered = getFilteredRows();
+    if (cb.checked) {
+      filtered.forEach(r => selectedIds.add(r.id));
+    } else {
+      const filteredIds = new Set(filtered.map(r => r.id));
+      for (const id of selectedIds) {
+        if (filteredIds.has(id)) selectedIds.delete(id);
+      }
+    }
+    renderTable();
+  }
+
+  function selectAllVisible() {
+    getFilteredRows().forEach(r => selectedIds.add(r.id));
+    renderTable();
+  }
+
+  function clearSelection() {
+    selectedIds.clear();
+    document.getElementById('selectAllCb').checked = false;
+    renderTable();
+  }
+
+  function updateBulkBar() {
+    const bar = document.getElementById('bulkBar');
+    const count = selectedIds.size;
+    document.getElementById('bulkCountBar').textContent = count + ' selected';
+    if (count > 0) {
+      bar.classList.add('visible');
+    } else {
+      bar.classList.remove('visible');
+    }
+  }
+
+  function openBulkModal() {
+    if (selectedIds.size === 0) return;
+    document.getElementById('bulkCount').textContent = selectedIds.size;
+    document.getElementById('bulkModal').style.display = 'flex';
+  }
+
+  function closeBulkModal() {
+    document.getElementById('bulkModal').style.display = 'none';
+  }
+
+  function confirmBulkDelete() {
+    if (selectedIds.size === 0) return;
+    const count = selectedIds.size;
+    lastBulkDeleted = rows.filter(r => selectedIds.has(r.id)).map(function(r) { return Object.assign({}, r); });
+    lastBulkDeleted.forEach(function(r) { dirtyIds.deleted.add(r.id); });
+    lastBulkDeleted.forEach(function(r) { existingKeysCache.delete(rowKey(r)); });
+    rows = rows.filter(r => !selectedIds.has(r.id));
+    logAudit('bulk_delete', { count: count, ids: Array.from(selectedIds) });
+    selectedIds.clear();
+    closeBulkModal();
+    document.getElementById('selectAllCb').checked = false;
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    saveToStorage();
+    refreshAll();
+    const toast = document.getElementById('undoToast');
+    if (toast) {
+      safeSet('undoToastText', 'innerHTML', `🗑 ${count} energy transactions deleted. <strong>Undo?</strong>`);
+      toast.style.display = 'flex';
+      toast.classList.add('show');
+    }
+    if (undoTimeout) clearTimeout(undoTimeout);
+    undoTimeout = setTimeout(() => hideToast('undoToast'), 8000);
+  }
+
+  // ==================== RESET WITH AUTO-BACKUP ====================
+  function resetAll() {
+    if (rows.length === 0) {
+      rows = [];
+      safeSet('logInput', 'value', '');
+      safeSet('excelFile', 'value', '');
+      safeSet('uploadZone', 'className', 'upload-zone');
+      safeSet('uploadZoneText', 'innerHTML', '⚡ Click or drag &amp; drop Excel / JSON file here');
+      safeSet('dupNotice', 'style.display', 'none');
+      safeSet('okNotice', 'className', '');
+      balMapCache = null;
+      sortedRowsCache = null;
+      statsCache = null;
+      filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+      saveToStorage();
+      refreshAll();
+      return;
+    }
+    document.getElementById('resetTxCount').textContent = rows.length;
+    document.getElementById('resetModal').style.display = 'flex';
+  }
+
+  function closeResetModal() {
+    document.getElementById('resetModal').style.display = 'none';
+  }
+
+  async function confirmReset() {
+    showLoading('Creating energy backup...');
+    let backupOk = false;
+    try {
+      const data = { version: APP_VERSION, timestamp: Date.now(), initBal: parseFloat(document.getElementById('initBal').value)||0, rows };
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `syphon_energy_RESET_BACKUP_${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      backupOk = true;
+    } catch(e) {
+      hideLoading();
+      return alert('❌ Failed to create energy backup. Reset cancelled.');
+    }
+    if (!backupOk) { hideLoading(); return; }
+    existingKeysCache.clear();
+    rows = [];
+    selectedIds.clear();
+    document.getElementById('selectAllCb').checked = false;
+    document.getElementById('logInput').value = '';
+    document.getElementById('excelFile').value = '';
+    document.getElementById('uploadZone').className = 'upload-zone';
+    document.getElementById('uploadZoneText').innerHTML = '⚡ Click or drag &amp; drop Excel / JSON file here';
+    document.getElementById('dupNotice').style.display = 'none';
+    document.getElementById('okNotice').className = '';
+    closeResetModal();
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+    saveToStorage();
+    refreshAll();
+    hideLoading();
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = '✅ Energy data reset. Backup has been downloaded.';
+    toast.classList.add('show');
+    setTimeout(() => hideToast('dlToast'), 4000);
+  }
+
+  // ==================== MISC ====================
+  function showToast(msg, duration) {
+    const toast = document.getElementById('dlToast');
+    document.getElementById('dlToastText').textContent = msg;
+    toast.classList.add('show');
+    setTimeout(function() { hideToast('dlToast'); }, duration || 3000);
+  }
+
+  function downloadJSON(data, filename) {
+    var blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function getColorClass(value) {
+    return value > 0 ? 'green' : value < 0 ? 'red' : 'amber';
+  }
+
+  function updateDownloadBtn() {
+    const btn = document.getElementById('dlBtn');
+    const has = rows.length > 0;
+    btn.disabled = !has;
+    btn.style.opacity = has ? '1' : '0.4';
+    btn.style.cursor = has ? 'pointer' : 'not-allowed';
+  }
+
+  function hideToast(id) {
+    const toast = document.getElementById(id);
+    toast.classList.remove('show');
+    setTimeout(() => { toast.style.display = 'none'; }, 300);
+  }
+
+  function showLoading(text) {
+    document.getElementById('loadingText').textContent = text || 'Processing...';
+    document.getElementById('loadingOverlay').classList.add('visible');
+  }
+
+  function hideLoading() {
+    document.getElementById('loadingOverlay').classList.remove('visible');
+  }
+
+  // ==================== REFRESH & INIT ====================
+  function refreshAll() {
+    balMapCache = null;
+    sortedRowsCache = null;
+    statsCache = null;
+    existingKeysCache = new Set(rows.map(rowKey));
+    updateFilters();
+    recalc();
+    renderTable();
+    initRecapTabs();  // Initialize and pre-render all recap data
+    renderPlayerStats();
+    renderChart();
+    updateDownloadBtn();
+    updateStorageBadge();
+  }
+
+  // ==================== KEYBOARD SHORTCUTS ====================
+  document.addEventListener('keydown', function(e) {
+    const tag = e.target.tagName.toLowerCase();
+    const isTyping = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const ctrl = isMac ? e.metaKey : e.ctrlKey;
+
+    if (ctrl && e.key === 'Enter') {
+      e.preventDefault();
+      parseLog();
+    }
+    if (ctrl && e.key === 's' && !isTyping) {
+      e.preventDefault();
+      saveToStorage().then(() => {
+        const toast = document.getElementById('dlToast');
+        if (toast) {
+          safeSet('dlToastText', 'textContent', '💾 Energy data saved!');
+          toast.classList.add('show');
+          setTimeout(() => hideToast('dlToast'), 2000);
+        }
+      });
+    }
+    if (ctrl && e.key === 'e' && !isTyping) {
+      e.preventDefault();
+      if (rows.length > 0) autoDownloadExcel();
+    }
+    if (e.key === 'Escape') {
+      closeModal();
+      closeAddModal();
+      closeResetModal();
+      closeBulkModal();
+      closePlayerDetail();
+      safeSet('dupNotice', 'style.display', 'none');
+    }
+    if (ctrl && e.key === 'f' && !isTyping) {
+      e.preventDefault();
+      const searchEl = document.getElementById('fSearch');
+      if (searchEl) searchEl.focus();
+    }
+  });
+
+  // ==================== INIT ====================
+  window.onload = async function () {
+    if ('serviceWorker' in navigator) {
+      var hasOldSw = navigator.serviceWorker.controller;
+      var lastCleanup = sessionStorage.getItem('swCleanupDone');
+      if (hasOldSw && !lastCleanup) {
+        var regs = await navigator.serviceWorker.getRegistrations();
+        for (var i = 0; i < regs.length; i++) {
+          regs[i].unregister();
+        }
+        sessionStorage.setItem('swCleanupDone', '1');
+        window.location.reload();
+        return;
+      }
+    }
+    try {
+      await initDB();
+      try {
+        const savedAudit = localStorage.getItem('syphonAuditLog');
+        if (savedAudit) auditLog = JSON.parse(savedAudit);
+      } catch(e) { auditLog = []; }
+      if (localStorage.getItem('darkMode') === '1') {
+        document.body.classList.add('dark');
+        document.getElementById('darkBtn').textContent = '☀️';
+      }
+      updateStorageBadge();
+      const initBalEl = document.getElementById('initBal');
+      if (initBalEl) {
+        initBalEl.addEventListener('input', function() { recalc(); renderMonthly(); renderPeriod(); saveToStorage(); });
+      }
+      const logoutBtnEl = document.getElementById('logoutBtn');
+      if (logoutBtnEl) logoutBtnEl.addEventListener('click', logout);
+      safeAddListener('loadBtn', 'click', loadFromStorage);
+      safeAddListener('backupBtn', 'click', saveJSONBackup);
+      safeAddListener('resetBtn', 'click', resetAll);
+      safeAddListener('parseBtn', 'click', parseLog);
+      safeAddListener('addManualBtn', 'click', openAddModal);
+      safeAddListener('clearLogBtn', 'click', function() { const el = document.getElementById('logInput'); if (el) el.value = ''; });
+      safeAddListener('dlBtn', 'click', autoDownloadExcel);
+      safeAddListener('csvBtn', 'click', exportCSV);
+      safeAddListener('pdfBtn', 'click', exportPDF);
+      safeAddListener('fPlayer', 'change', renderTable);
+      safeAddListener('fReason', 'change', renderTable);
+      safeAddListener('fTag', 'change', renderTable);
+      safeAddListener('fCurrency', 'change', renderTable);
+      safeAddListener('fDateFrom', 'change', renderTable);
+      safeAddListener('fDateTo', 'change', renderTable);
+      safeAddListener('fSort', 'change', function() { applySort(this.value); });
+      safeAddListener('fSearch', 'input', renderTable);
+      safeAddListener('selectAllCb', 'change', function() { toggleSelectAll(this); });
+
+      document.querySelectorAll('.tab-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() { switchTab(parseInt(btn.dataset.tab)); });
+      });
+      const uploadZone = document.getElementById('uploadZone');
+      uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+      uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+      uploadZone.addEventListener('drop', e => {
+        e.preventDefault();
+        uploadZone.classList.remove('drag-over');
+        handleFileSelect(e);
+      });
+      if (localStorage.getItem(STORAGE_KEY)) {
+        document.getElementById('uploadZoneText').innerHTML += `<br><small style="color:#7c3aed">💡 There is saved energy data — click "Load from Browser"</small>`;
+      }
+
+      refreshAll();
+      registerPWA();
+    } catch(err) {
+      console.error('Syphon Energy App init error:', err);
+      document.body.innerHTML = '<div style="text-align:center;margin-top:100px;font-size:18px;color:#dc2626">❌ Syphon Energy app failed to load. Open Console (F12) for error details.</div>';
+    }
+  };
+
+  // ==================== PWA ====================
+  var deferredPrompt = null;
+  var swRegistration = null;
+
+  function registerPWA() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').then(function(reg) {
+        swRegistration = reg;
+        reg.addEventListener('updatefound', function() {
+          var newWorker = reg.installing;
+          newWorker.addEventListener('statechange', function() {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              // New SW installed — force reload to get fresh content
+              // Use debounce to prevent infinite reload loop
+              var lastReload = sessionStorage.getItem('swLastReload');
+              var now = Date.now();
+              if (!lastReload || (now - parseInt(lastReload)) > 10000) {
+                sessionStorage.setItem('swLastReload', now);
+                window.location.reload();
+              }
+            }
+          });
+        });
+      }).catch(function(err) {
+        console.warn('PWA: SW registration failed:', err);
+      });
+    }
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'CACHE_UPDATED') {
+          var lastReload = sessionStorage.getItem('swLastReload');
+          var now = Date.now();
+          if (!lastReload || (now - parseInt(lastReload)) > 10000) {
+            sessionStorage.setItem('swLastReload', now);
+            window.location.reload();
+          }
+        }
+      });
+    }
+
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      deferredPrompt = e;
+      var banner = document.getElementById('pwaBanner');
+      var installBtn = document.getElementById('pwaInstallBtn');
+      var updateBtn = document.getElementById('pwaUpdateBtn');
+      document.getElementById('pwaBannerText').textContent = '📲 Install Syphon Energy app for offline access';
+      installBtn.style.display = 'inline-block';
+      updateBtn.style.display = 'none';
+      banner.classList.add('visible');
+      installBtn.onclick = function() {
+        banner.classList.remove('visible');
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(function(result) {
+          if (result.outcome === 'accepted') {
+            showToast('✅ Syphon Energy app installed successfully!', 3000);
+          }
+          deferredPrompt = null;
+        });
+      };
+    });
+  }
+
+  function showUpdateBanner() {
+    var banner = document.getElementById('pwaBanner');
+    var installBtn = document.getElementById('pwaInstallBtn');
+    var updateBtn = document.getElementById('pwaUpdateBtn');
+    document.getElementById('pwaBannerText').textContent = '🔄 New Syphon Energy update available — refresh to update';
+    installBtn.style.display = 'none';
+    updateBtn.style.display = 'inline-block';
+    banner.classList.add('visible');
+    updateBtn.onclick = function() {
+      if (swRegistration && swRegistration.waiting) {
+        swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        window.location.reload();
+      }
+    };
+    setTimeout(function() { banner.classList.remove('visible'); }, 15000);
+  }
+
+  window.addEventListener('beforeunload', function(e) {
+    if (rows.length > 0) {
+      e.preventDefault();
+      e.returnValue = 'You have ' + rows.length + ' energy transactions not yet exported. Are you sure you want to leave?';
+    }
+  });
+
+  // ==================== EXPOSE TO WINDOW ====================
+  window.getFilteredRows = getFilteredRows;
+  window.recalc = recalc;
+  window.renderMonthly = renderMonthly;
+  window.renderPeriod = renderPeriod;
+  window.renderPlayerStats = renderPlayerStats;
+  window.switchRecapTab = switchRecapTab;
+  window.showPlayerDetail = showPlayerDetail;
+  window.closePlayerDetail = closePlayerDetail;
+  window.saveToStorage = saveToStorage;
+  window.toggleDarkMode = toggleDarkMode;
+  window.logout = logout;
+  window.loadFromStorage = loadFromStorage;
+  window.saveJSONBackup = saveJSONBackup;
+  window.handleFileSelect = handleFileSelect;
+  window.parseLog = parseLog;
+  window.renderTable = renderTable;
+  window.deleteTransaction = deleteTransaction;
+  window.undoDelete = undoDelete;
+  window.editTransaction = editTransaction;
+  window.saveEdit = saveEdit;
+  window.closeModal = closeModal;
+  window.openAddModal = openAddModal;
+  window.closeAddModal = closeAddModal;
+  window.saveAdd = saveAdd;
+  window.sortTable = sortTable;
+  window.autoDownloadExcel = autoDownloadExcel;
+  window.exportCSV = exportCSV;
+  window.exportPDF = exportPDF;
+  window.switchTab = switchTab;
+  window.toggleSelect = toggleSelect;
+  window.toggleSelectAll = toggleSelectAll;
+  window.selectAllVisible = selectAllVisible;
+  window.clearSelection = clearSelection;
+  window.openBulkModal = openBulkModal;
+  window.closeBulkModal = closeBulkModal;
+  window.confirmBulkDelete = confirmBulkDelete;
+  window.resetAll = resetAll;
+  window.closeResetModal = closeResetModal;
+  window.confirmReset = confirmReset;
+  window.hideToast = hideToast;
+  window.showToast = showToast;
+  window.downloadJSON = downloadJSON;
+  window.getColorClass = getColorClass;
+  window.renderPagination = renderPagination;
+  window.goPage = goPage;
+  window.changeRPP = changeRPP;
+  window.applySort = applySort;
+  window.mergeDuplicates = mergeDuplicates;
+  window.renderChart = renderChart;
+  window.quickEditTag = quickEditTag;
+})();

@@ -1,10 +1,12 @@
-const CACHE_NAME = 'albion-treasury-v8';
+const CACHE_NAME = 'albion-log-v9';
 const ASSETS = [
   './',
   './login.html',
   './index.html',
+  './syphon.html',
   './style.css',
   './app.js',
+  './syphon.js',
   './manifest.json',
   './icon.svg',
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'

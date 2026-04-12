@@ -29,5 +29,6 @@
     }
   ],
   "categories": ["finance", "productivity"],
-  "lang": "id"
+  "lang": "en",
+  "start_url": "/"
 }

@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Albion Online Guild Treasury Balance Tracker & Transaction Log">
-<meta name="theme-color" content="#1e40af">
+<meta name="description" content="Syphon Energy Guild — Albion Online Energy Balance Tracker & Transaction Log">
+<meta name="theme-color" content="#7c3aed">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Guild Treasury">
+<meta name="apple-mobile-web-app-title" content="Syphon Energy">
 <link rel="manifest" href="./manifest.json">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231e40af'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial'>G</text></svg>">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%237c3aed'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial'>S</text></svg>">
 <link rel="apple-touch-icon" href="./icon-192.png">
 <link rel="apple-touch-icon" sizes="512x512" href="./icon-512.png">
 <link rel="stylesheet" href="./style.css">
-<title>Albion Guild Balance Tracker V8.1</title>
-<!-- XLSX Library from CDN - TODO: Generate proper SRI hash with: curl -s URL | openssl dgst -sha384 -binary | openssl base64 -A -->
+<title>Syphon Energy Guild — Albion Online Balance Tracker V1.1</title>
+<!-- XLSX Library from CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer crossorigin="anonymous"></script>
 <script>
 // Single login check - if not logged in, redirect to login
@@ -23,7 +23,7 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
 }
 </script>
 </head>
-<body>
+<body class="syphon-theme">
 <noscript>
   <div style="text-align:center;padding:4rem;font-size:1.2rem;color:#dc2626;background:#fee2e2;margin:2rem;border-radius:12px">
     <h2>⚠️ JavaScript Required</h2>
@@ -36,41 +36,41 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
   <div class="header-card" id="headerCard">
     <div class="header-top">
       <div>
-        <div class="guild-title">Guild Treasury — Albion Online <span class="badge" style="background:#1e40af;color:#fff;font-size:10px;vertical-align:middle">V8.1</span></div>
-        <div class="guild-sub">Balance Tracker &amp; Transaction Log</div>
+        <div class="guild-title">⚡ Syphon Energy Guild — Albion Online <span class="badge" style="background:#7c3aed;color:#fff;font-size:10px;vertical-align:middle">V1.1</span></div>
+        <div class="guild-sub">Energy Balance Tracker & Transaction Log</div>
       </div>
       <div class="balance-area">
         <input type="hidden" id="initBal" value="0">
-        <a href="./syphon.html" style="font-size:11px;padding:5px 10px;background:#7c3aed;color:#fff;border-radius:6px;text-decoration:none;margin-left:8px" title="Switch to Syphon Energy">⚡ Syphon</a>
+        <a href="./index.html" style="font-size:11px;padding:5px 10px;background:#1e40af;color:#fff;border-radius:6px;text-decoration:none;margin-left:8px" title="Switch to Treasury">💰 Treasury</a>
         <button onclick="toggleDarkMode()" id="darkBtn" style="margin-left:4px;font-size:12px">🌙</button>
         <button id="logoutBtn" style="margin-left:8px;font-size:12px" title="Logout">🚪 Logout</button>
       </div>
     </div>
     <div class="stats-row">
-      <div class="stat"><div class="stat-label">Current Balance</div><div class="stat-value amber" id="st-bal">0</div></div>
+      <div class="stat"><div class="stat-label">Current Energy Balance</div><div class="stat-value amber" id="st-bal">0</div></div>
       <div class="stat"><div class="stat-label">Net Last 24 Hours</div><div class="stat-value" id="st-net24">0</div></div>
       <div class="stat"><div class="stat-label">Net This Week</div><div class="stat-value" id="st-netWeek">0</div></div>
-      <div class="stat"><div class="stat-label">Total Deposit</div><div class="stat-value green" id="st-dep">0</div></div>
-      <div class="stat"><div class="stat-label">Total Withdrawal</div><div class="stat-value red" id="st-wit">0</div></div>
+      <div class="stat"><div class="stat-label">Total Energy Deposit</div><div class="stat-value green" id="st-dep">0</div></div>
+      <div class="stat"><div class="stat-label">Total Energy Withdrawal</div><div class="stat-value red" id="st-wit">0</div></div>
       <div class="stat"><div class="stat-label">Networth (Total)</div><div class="stat-value" id="st-net">0</div></div>
       <div class="stat"><div class="stat-label">Transactions</div><div class="stat-value" id="st-cnt">0</div></div>
     </div>
   </div>
 
-  <!-- TREASURY CONTENT (Page 1) -->
-  <div id="treasuryContent">
+  <!-- SYPHON ENERGY CONTENT -->
+  <div id="syphonContent">
 
   <!-- DATA MANAGEMENT -->
   <div class="section-card">
     <div class="section-header">
-      <span class="section-title">① Data Management (V8.1)</span>
+      <span class="section-title">① Data Management (Syphon Energy V1.1)</span>
       <div>
         <span class="badge" id="storageBadge">Browser Storage: —</span>
       </div>
     </div>
     <div class="upload-zone" id="uploadZone" role="button" aria-label="Upload Excel or JSON file">
       <input type="file" accept=".xlsx,.xls,.json" id="excelFile" onchange="handleFileSelect(event)" aria-label="Choose file to upload">
-      <div class="upload-zone-text" id="uploadZoneText">📂 Click or drag & drop Excel / JSON file here</div>
+      <div class="upload-zone-text" id="uploadZoneText">⚡ Click or drag & drop Excel / JSON file here</div>
       <div class="upload-zone-sub">.xlsx (from old tracker) or .json backup</div>
     </div>
     <div class="btn-row" style="margin-top:12px;gap:8px">
@@ -88,7 +88,7 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
       <span class="section-title">② Paste New Log</span>
       <span class="badge">Input</span>
     </div>
-    <textarea id="logInput" placeholder='Paste log here, example:&#10;"Date" "Player" "Reason" "Amount"&#10;"2026-04-01 05:05:40" "M0W" "Withdrawal" "-1000000"'></textarea>
+    <textarea id="logInput" placeholder='Paste log here, example:&#10;"Date" "Player" "Reason" "Amount"&#10;"2026-04-01 05:05:40" "PlayerName" "Withdrawal" "-1000000"'></textarea>
     <div class="hint">Format: "Date" "Player" "Reason" "Amount" — Duplicates automatically skipped.</div>
     <div class="btn-row">
       <button id="parseBtn" class="btn-primary">⚡ Parse & Load</button>
@@ -122,7 +122,7 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
   <!-- MAIN SECTION -->
   <div class="section-card">
     <div class="section-header" style="margin-bottom:6px">
-      <span class="section-title">Treasury Data</span>
+      <span class="section-title">Data Syphon Energy</span>
       <div style="display:flex;align-items:center;gap:8px">
         <span class="badge" id="tbl-badge">0 rows</span>
         <button id="dlBtn" class="btn-green" disabled style="font-size:12px;padding:5px 12px;opacity:0.4;cursor:not-allowed">⬇ Download Excel</button>
@@ -131,11 +131,12 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
       </div>
     </div>
 
-    <!-- TREASURY TABS -->
-    <div id="treasuryTabs">
+    <!-- SYPHON ENERGY TABS -->
+    <div id="syphonTabs">
       <div class="tab-row">
         <button class="tab-btn active" data-tab="0">📋 Transaction Log</button>
         <button class="tab-btn" data-tab="1">📅 Complete Recap</button>
+        <button class="tab-btn" data-tab="2">👥 Player</button>
       </div>
 
       <!-- TAB 0: LOG -->
@@ -172,7 +173,7 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
             <tr>
               <th class="cb-cell"><input type="checkbox" id="selectAllCb" onchange="toggleSelectAll(this)" title="Select all"></th>
               <th onclick="sortTable(0)" class="sortable" data-col="0">#</th>
-              <th onclick="sortTable(1)" class="sortable" data-col="1">Date &amp; Time</th>
+              <th onclick="sortTable(1)" class="sortable" data-col="1">Date & Time</th>
               <th onclick="sortTable(2)" class="sortable" data-col="2">Player</th>
               <th onclick="sortTable(3)" class="sortable" data-col="3">Reason</th>
               <th onclick="sortTable(4)" class="sortable" data-col="4">Tag</th>
@@ -201,41 +202,79 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
       
       <!-- Daily Recap -->
       <div id="recapDaily" class="recap-panel">
-        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">📅 Transaction recap per day.</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">📅 Energy transaction recap per day.</div>
         <div id="dailyGrid" class="monthly-grid">
           <div style="grid-column:1/-1;text-align:center;padding:2.5rem;color:#6b7280;font-size:14px;font-weight:500">📊 No data yet</div>
         </div>
       </div>
-
+      
       <!-- Weekly Recap -->
       <div id="recapWeekly" class="recap-panel" style="display:none">
-        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">📆 Transaction recap per week (from the 1st).</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">📆 Energy transaction recap per week (from the 1st).</div>
         <div id="periodGrid" class="monthly-grid">
           <div style="grid-column:1/-1;text-align:center;padding:2.5rem;color:#6b7280;font-size:14px;font-weight:500">📊 No data yet</div>
         </div>
       </div>
-
+      
       <!-- Monthly Recap -->
       <div id="recapMonthly" class="recap-panel" style="display:none">
-        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">🗓️ Starting Balance each month is calculated from the 1st.</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">🗓️ Starting Energy Balance each month is calculated from the 1st.</div>
         <div id="monthlyGrid" class="monthly-grid">
           <div style="grid-column:1/-1;text-align:center;padding:2.5rem;color:#6b7280;font-size:14px;font-weight:500">📊 No data yet</div>
         </div>
       </div>
     </div>
-  </div> <!-- END MAIN SECTION (Treasury) -->
-  </div> <!-- END TREASURY CONTENT -->
+
+    <!-- TAB 2: Rekap Per Player dengan Search -->
+    <div class="tab-panel" id="tab-2">
+      <div style="font-size:12px;color:#6b7280;margin-bottom:12px;font-weight:500">👥 Statistics player. Click card for transaction details.</div>
+      
+      <!-- Player Controls -->
+      <div class="filter-row" style="margin-bottom:12px">
+        <input type="text" id="playerSearch" placeholder="🔍 Search player..." oninput="renderPlayerStats()" style="flex:1;min-width:200px">
+        <label>Sort:</label>
+        <select id="playerRecapSort" onchange="renderPlayerStats()" style="width:160px">
+          <option value="net">Net Amount</option>
+          <option value="dep">Deposit</option>
+          <option value="wit">Withdrawal</option>
+          <option value="count">Transactions</option>
+          <option value="name">Name</option>
+        </select>
+        <select id="playerRecapOrder" onchange="renderPlayerStats()" style="width:100px">
+          <option value="desc">↓</option>
+          <option value="asc">↑</option>
+        </select>
+      </div>
+      
+      <!-- Player Stats Grid (Compact) -->
+      <div id="playerGrid" class="player-stats-compact">
+        <div style="grid-column:1/-1;text-align:center;padding:2.5rem;color:#6b7280;font-size:14px;font-weight:500">📊 No player data yet</div>
+      </div>
+      
+      <!-- Player Detail Modal -->
+      <div id="playerDetailModal" class="modal">
+        <div class="modal-content" style="max-width:800px;max-height:80vh;overflow-y:auto">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+            <h3 style="margin:0" id="playerDetailTitle">👤 Player Detail</h3>
+            <button onclick="closePlayerDetail()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#64748b">✕</button>
+          </div>
+          <div id="playerDetailContent"></div>
+        </div>
+      </div>
+    </div>
+  </div> <!-- END MAIN SECTION (Syphon Energy) -->
+  </div> <!-- END SYPHON CONTENT -->
 
 <!-- EDIT MODAL -->
 <div id="editModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
   <div class="modal-content">
-    <h3 id="editModalTitle" style="margin-bottom:16px">✏️ Edit Transaction</h3>
+    <h3 id="editModalTitle" style="margin-bottom:16px">✏️ Edit Energy Transaction</h3>
     <div id="editError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:12px;display:none"></div>
     <input id="editDate" type="datetime-local" placeholder="2026-04-01T05:05">
     <input id="editPlayer" type="text" placeholder="Player Name">
     <input id="editReason" type="text" placeholder="Reason / Description">
     <input id="editTag" type="text" placeholder="Tag (optional)">
-    <select id="editCurrency"><option value="Silver">Silver</option><option value="Gold">Gold</option><option value="Fame">Fame</option><option value="Other">Other</option></select>
+    <select id="editCurrency"><option value="Energy">Energy</option><option value="Silver">Silver</option><option value="Gold">Gold</option><option value="Fame">Fame</option><option value="Other">Other</option></select>
     <input id="editAmount" type="number" placeholder="Amount (negative = withdrawal)">
     <div class="btn-row" style="margin-top:20px">
       <button onclick="saveEdit()" class="btn-green">💾 Save Changes</button>
@@ -247,13 +286,13 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
 <!-- ADD TRANSACTION MODAL -->
 <div id="addModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="addModalTitle">
   <div class="modal-content">
-    <h3 id="addModalTitle" style="margin-bottom:16px">➕ Add New Transaction</h3>
+    <h3 id="addModalTitle" style="margin-bottom:16px">➕ Add New Energy Transaction</h3>
     <div id="addError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:12px;display:none"></div>
     <input id="addDate" type="datetime-local" placeholder="2026-04-01T05:05">
     <input id="addPlayer" type="text" placeholder="Player Name">
     <input id="addReason" type="text" placeholder="Reason / Description">
-    <input id="addTag" type="text" placeholder="Tag (optional, e.g.: War, Raid, Tax)">
-    <select id="addCurrency"><option value="Silver">Silver</option><option value="Gold">Gold</option><option value="Fame">Fame</option><option value="Other">Other</option></select>
+    <input id="addTag" type="text" placeholder="Tag (optional, e.g.: Syphon, Raid, War)">
+    <select id="addCurrency"><option value="Energy">Energy</option><option value="Silver">Silver</option><option value="Gold">Gold</option><option value="Fame">Fame</option><option value="Other">Other</option></select>
     <input id="addAmount" type="number" placeholder="Amount (negative = withdrawal)">
     <div class="btn-row" style="margin-top:20px">
       <button onclick="saveAdd()" class="btn-green">💾 Save</button>
@@ -265,8 +304,8 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
 <!-- RESET CONFIRM MODAL -->
 <div id="resetModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="resetModalTitle">
   <div class="modal-content" style="max-width:500px">
-    <h3 id="resetModalTitle" style="margin-bottom:12px">⚠️ Reset All Data</h3>
-    <p style="font-size:13px;color:#64748b;margin-bottom:16px">This action will permanently delete all transactions. An automatic backup will be created before reset.</p>
+    <h3 id="resetModalTitle" style="margin-bottom:12px">⚠️ Reset All Energy Data</h3>
+    <p style="font-size:13px;color:#64748b;margin-bottom:16px">This action will permanently delete all energy transactions. An automatic backup will be created before reset.</p>
     <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:#92400e">
       <strong>Number of transactions:</strong> <span id="resetTxCount">0</span><br>
       <strong>Automatic backup:</strong> Will be downloaded as JSON
@@ -282,7 +321,7 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
 <div id="bulkModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="bulkModalTitle">
   <div class="modal-content" style="max-width:500px">
     <h3 id="bulkModalTitle" style="margin-bottom:12px">🗑️ Delete Selected</h3>
-    <p style="font-size:13px;color:#64748b;margin-bottom:16px">Delete <strong id="bulkCount">0</strong> selected transactions?</p>
+    <p style="font-size:13px;color:#64748b;margin-bottom:16px">Delete <strong id="bulkCount">0</strong> selected energy transactions?</p>
     <div class="btn-row" style="margin-top:16px">
       <button onclick="confirmBulkDelete()" class="btn-danger" style="background:#dc2626;color:#fff;border-color:#dc2626">🗑 Delete Selected</button>
       <button onclick="closeBulkModal()" style="margin-left:auto">Cancel</button>
@@ -319,6 +358,6 @@ if (!sessionStorage.getItem('albionLoggedIn')) {
   <button class="toast-close" onclick="hideToast('undoToast')">✕</button>
 </div>
 
-<script src="./app.js" defer></script>
+<script src="./syphon.js" defer></script>
 </body>
 </html>

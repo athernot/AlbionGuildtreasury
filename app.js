@@ -11,7 +11,7 @@
   let undoTimeout = null;
   /** @type {object|null} */
   let balMapCache = null;
-  const APP_VERSION = 'V8.0';
+  const APP_VERSION = 'V8.1';
   const STORAGE_KEY = 'albionGuildTreasuryV80';
   /** @type {{col:number,dir:'asc'|'desc'}} */
   let currentSort = { col: 1, dir: 'desc' };
@@ -37,12 +37,13 @@
   let sortedRowsCache = null;
   let statsCache = null;
   let filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+  let recapInitialized = false;
 
   function logAudit(action, details) {
   auditLog.push({ timestamp: new Date().toISOString(), action: action, details: details });
   if (auditLog.length > 500) auditLog = auditLog.slice(-500);
   try { localStorage.setItem('albionAuditLog', JSON.stringify(auditLog)); } catch(e) {
-    console.warn('⚠️ Audit log gagal disimpan ke localStorage:', e);
+    console.warn('⚠️ Audit log failed to save to localStorage:', e);
     // Silently drop oldest entries to stay within limits
     if (auditLog.length > 100) auditLog = auditLog.slice(-100);
   }
@@ -64,7 +65,7 @@
       };
       request.onsuccess = e => { db = e.target.result; resolve(); };
       request.onerror = e => {
-        console.warn('IndexedDB tidak tersedia:', e.target.error);
+        console.warn('IndexedDB not available:', e.target.error);
         useIndexedDB = false;
         resolve();
       };
@@ -103,11 +104,11 @@
     });
   } catch (err) {
     if (err.name === 'QuotaExceededError') {
-      alert('⚠️ Penyimpanan browser penuh! Data tidak bisa disimpan ke IndexedDB. Export JSON backup sekarang.');
+      alert('⚠️ Browser storage is full! Data cannot be saved to IndexedDB. Export JSON backup now.');
       useIndexedDB = false;
       saveToStorage();
     } else if (err.name === 'NotAllowedError') {
-      alert('⚠️ Akses ke IndexedDB ditolak. Cek izin browser.');
+      alert('⚠️ IndexedDB access denied. Check browser permissions.');
       useIndexedDB = false;
     } else {
       console.error('IndexedDB save error:', err);
@@ -144,14 +145,12 @@
   }
   return false;
 }
-
-  // ==================== UTILITIES ====================
   /**
-   * Format number as Indonesian locale string (e.g. 1.000.000)
+   * Format number with thousand separators (English locale: 1,000,000)
    * @param {number} n
    * @returns {string}
    */
-  function fmt(n){ return (n<0?'-':'') + Math.abs(Math.round(n)).toLocaleString('id-ID'); }
+  function fmt(n){ return (n<0?'-':'') + Math.abs(Math.round(n)).toLocaleString('en-US'); }
 
   /**
    * Generate a unique key for a transaction row (used for running balance map)
@@ -181,8 +180,27 @@
      .replace(/</g, '&lt;')
      .replace(/>/g, '&gt;')
      .replace(/"/g, '&quot;')
-     .replace(/'/g, '&#039;');
+     .replace(/'/g, '&#039;')
+     .replace(/\\/g, '&#92;');
  }
+
+  /**
+   * Escape a string for safe use inside onclick handler attributes
+   * Prevents XSS when user data is embedded in HTML event handlers
+   * @param {string} str
+   * @returns {string}
+   */
+  function escAttr(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+      .replace(/`/g, '&#96;')
+      .replace(/\\/g, '&#92;');
+  }
 
   /**
    * Validate date string format (YYYY-MM-DD HH:MM:SS minimum)
@@ -247,7 +265,7 @@
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 8);
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
 // ==================== HELPERS ====================
@@ -297,8 +315,8 @@
   }
 
   function logout() {
-    if (!confirm('🚪 Logout? Anda perlu login lagi untuk mengakses aplikasi.')) return;
-    sessionStorage.removeItem('treasuryLoggedIn');
+    if (!confirm('🚪 Logout? You will need to login again to access the application.')) return;
+    sessionStorage.removeItem('albionLoggedIn');
     window.location.href = './login.html';
   }
 
@@ -321,7 +339,6 @@
     savePromise = new Promise((resolve, reject) => {
       saveDebounceTimer = setTimeout(async () => {
         saveDebounceTimer = null;
-        savePromise = null;
         try {
           const init = getInitialBalance();
           if (useIndexedDB && db) {
@@ -339,8 +356,9 @@
           updateStorageBadge();
           resolve();
         } catch (error) {
-          savePromise = null;
           reject(error);
+        } finally {
+          savePromise = null;
         }
       }, 300);
     });
@@ -353,7 +371,7 @@ async function loadFromStorage() {
     await initDB();
     useIndexedDB = true;
     if (await loadFromIndexedDB()) {
-      alert('✅ Data dimuat dari IndexedDB (5000+ transaksi)');
+      alert('✅ Data loaded from IndexedDB (5000+ transactions)');
       refreshAll();
       return;
     }
@@ -361,14 +379,14 @@ async function loadFromStorage() {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (!saved) {
     const toast = document.getElementById('dlToast');
-    document.getElementById('dlToastText').textContent = '⚠️ Belum ada data tersimpan di browser. Upload file Excel/JSON atau paste log baru.';
+    document.getElementById('dlToastText').textContent = '⚠️ No data saved in browser yet. Upload Excel/JSON file or paste new log.';
     toast.classList.add('show');
     setTimeout(() => hideToast('dlToast'), 4000);
     return;
   }
-  if (!confirm('Load data dari browser? Data saat ini akan terganti.')) return;
+  if (!confirm('Load data from browser? Current data will be replaced.')) return;
   let data;
-  try { data = JSON.parse(saved); } catch(e) { return alert('❌ Data di browser rusak/corrupt. Hapus data browser atau import backup JSON.'); }
+  try { data = JSON.parse(saved); } catch(e) { return alert('❌ Data in browser is corrupted. Clear browser data or import JSON backup.'); }
   document.getElementById('initBal').value = data.initBal || 0;
   rows = (data.rows || []).map(function(r) {
     if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
@@ -382,14 +400,14 @@ async function loadFromStorage() {
   dirtyIds.added.clear();
   dirtyIds.deleted.clear();
   document.getElementById('uploadZone').classList.add('upload-loaded');
-  document.getElementById('uploadZoneText').innerHTML = `✅ Data browser dimuat — ${rows.length} transaksi`;
+  document.getElementById('uploadZoneText').innerHTML = `✅ Browser data loaded — ${rows.length} transactions`;
   saveToStorage();
   refreshAll();
-  alert('✅ Data berhasil dimuat dari browser!');
+  alert('✅ Data successfully loaded from browser!');
 }
 
 function saveJSONBackup() {
-  if (rows.length === 0) return alert('Tidak ada data untuk di-backup.');
+  if (rows.length === 0) return alert('No data to backup.');
   const data = { version: APP_VERSION, timestamp: Date.now(), initBal: parseFloat(document.getElementById('initBal').value)||0, rows };
   const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
   const url = URL.createObjectURL(blob);
@@ -407,9 +425,9 @@ function updateStorageBadge() {
     badge.textContent = `Browser: ${data.rows.length} tx • ${date.toLocaleDateString('id-ID')}`;
     const lastSavedEl = document.getElementById('lastSaved');
     lastSavedEl.style.display = 'block';
-    lastSavedEl.innerHTML = `💾 Terakhir disimpan: ${date.toLocaleString('id-ID')}`;
+    lastSavedEl.innerHTML = `💾 Last saved: ${date.toLocaleString('id-ID')}`;
   } else {
-    badge.textContent = 'Browser Storage: Kosong';
+    badge.textContent = 'Browser Storage: Empty';
   }
 }
 
@@ -420,7 +438,7 @@ function updateStorageBadge() {
   if (!file) return;
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext !== 'json' && ext !== 'xlsx' && ext !== 'xls') {
-    return alert('⚠️ Format file tidak didukung. Gunakan .xlsx, .xls, atau .json');
+    return alert('⚠️ File format not supported. Use .xlsx, .xls, or .json');
   }
   if (ext === 'json') {
     const reader = new FileReader();
@@ -428,7 +446,7 @@ function updateStorageBadge() {
       try {
         const data = JSON.parse(ev.target.result);
         if (!data.rows || !Array.isArray(data.rows)) {
-          return alert('⚠️ File JSON tidak memiliki field "rows" yang valid.');
+          return alert('⚠️ JSON file does not have a valid "rows" field.');
         }
         let validCount = 0, invalidCount = 0;
         const validRows = data.rows.filter(function(r) {
@@ -446,7 +464,7 @@ function updateStorageBadge() {
           return true;
         });
         if (validRows.length === 0) {
-          return alert('⚠️ Tidak ada transaksi valid di file JSON. (' + invalidCount + ' baris tidak valid)');
+          return alert('⚠️ No valid transactions in JSON file. (' + invalidCount + ' invalid rows)');
         }
         rows = validRows.map(function(r) {
           if (!r.playerLc) r.playerLc = (r.player || '').toLowerCase();
@@ -458,29 +476,29 @@ function updateStorageBadge() {
         statsCache = null;
         document.getElementById('initBal').value = data.initBal || 0;
         document.getElementById('uploadZone').classList.add('upload-loaded');
-        let msg = '✅ ' + escHtml(file.name) + ' (JSON) — ' + validRows.length + ' transaksi';
-        if (invalidCount > 0) msg += ' (' + invalidCount + ' baris dilewati)';
+        let msg = '✅ ' + escHtml(file.name) + ' (JSON) — ' + validRows.length + ' transactions';
+        if (invalidCount > 0) msg += ' (' + invalidCount + ' rows skipped)';
         document.getElementById('uploadZoneText').innerHTML = msg;
         saveToStorage();
         refreshAll();
-        alert('✅ Backup JSON berhasil dimuat!' + (invalidCount > 0 ? '\n⚠️ ' + invalidCount + ' baris tidak valid dilewati.' : ''));
-      } catch(err) { alert('❌ Gagal membaca JSON: ' + err.message); }
+        alert('✅ JSON backup loaded successfully!' + (invalidCount > 0 ? '\n⚠️ ' + invalidCount + ' invalid rows skipped.' : ''));
+      } catch(err) { alert('❌ Failed to read JSON: ' + err.message); }
     };
     reader.readAsText(file);
   } else {
     // Check if XLSX library is available
     if (typeof XLSX === 'undefined') {
-      return alert('⚠️ Library XLSX (SheetJS) belum dimuat. Pastikan koneksi internet tersedia untuk memuat library dari CDN.\n\nAlternatif: Gunakan file JSON backup.');
+      return alert('⚠️ XLSX library (SheetJS) not loaded. Ensure internet connection is available to load the library from CDN.\n\nAlternative: Use JSON backup file.');
     }
     const reader = new FileReader();
     reader.onload = function(ev) {
       try {
         const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
         const sheetName = wb.SheetNames.find(function(n) { return n.toLowerCase().includes('log'); }) || wb.SheetNames[0];
-        if (!sheetName) return alert('⚠️ File Excel tidak memiliki sheet.');
+        if (!sheetName) return alert('⚠️ Excel file has no sheets.');
         const ws = wb.Sheets[sheetName];
         const aoa = XLSX.utils.sheet_to_json(ws, {header:1});
-        if (!aoa || aoa.length < 2) return alert('⚠️ Sheet "' + sheetName + '" kosong atau tidak memiliki data.');
+        if (!aoa || aoa.length < 2) return alert('⚠️ Sheet "' + sheetName + '" is empty or has no data.');
         let validCount = 0, invalidCount = 0;
         rows = [];
         for (let i = 1; i < aoa.length; i++) {
@@ -497,13 +515,13 @@ function updateStorageBadge() {
         sortedRowsCache = null;
         statsCache = null;
         document.getElementById('uploadZone').classList.add('upload-loaded');
-        let msg = '✅ ' + escHtml(file.name) + ' — ' + validCount + ' transaksi';
-        if (invalidCount > 0) msg += ' (' + invalidCount + ' baris dilewati)';
+        let msg = '✅ ' + escHtml(file.name) + ' — ' + validCount + ' transactions';
+        if (invalidCount > 0) msg += ' (' + invalidCount + ' rows skipped)';
         document.getElementById('uploadZoneText').innerHTML = msg;
         saveToStorage();
         refreshAll();
-        if (invalidCount > 0) alert('✅ Excel berhasil dimuat!\n⚠️ ' + invalidCount + ' baris tidak valid dilewati.');
-      } catch(err) { alert('❌ Gagal membaca file: ' + err.message); }
+        if (invalidCount > 0) alert('✅ Excel loaded successfully!\n⚠️ ' + invalidCount + ' invalid rows skipped.');
+      } catch(err) { alert('❌ Failed to read file: ' + err.message); }
     };
     reader.readAsArrayBuffer(file);
   }
@@ -555,7 +573,7 @@ function showNotices(addedCount, duplicates) {
   safeSet('okNotice', 'className', '');
   safeSet('mergeDupBtn', 'style.display', duplicates.length > 0 ? 'inline-block' : 'none');
   if (duplicates.length > 0) {
-    safeSet('dupSummary', 'textContent', `${duplicates.length} baris dilewati (duplikat). ${addedCount} baris baru ditambahkan.`);
+    safeSet('dupSummary', 'textContent', `${duplicates.length} rows skipped (duplicates). ${addedCount} new rows added.`);
     safeSet('dupBody', 'innerHTML', duplicates.map((r,i) => `
       <tr>
         <td style="color:#aaa">${i+1}</td>
@@ -563,12 +581,12 @@ function showNotices(addedCount, duplicates) {
         <td><strong>${escHtml(r.player)}</strong></td>
         <td>${escHtml(r.reason)}</td>
         <td style="color:${r.amount>=0?'#1D9E75':'#D85A30'};font-weight:600">${fmt(r.amount)}</td>
-        <td><span style="background:#fde68a;color:#78350f;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600">DUPLIKAT</span></td>
+        <td><span style="background:#fde68a;color:#78350f;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600">DUPLICATE</span></td>
       </tr>`).join(''));
     safeSet('dupNotice', 'style.display', 'block');
     setTimeout(() => { safeSet('dupNotice', 'style.display', 'none'); }, 8000);
   } else if (addedCount > 0) {
-    safeSet('okText', 'textContent', `${addedCount} transaksi berhasil ditambahkan.`);
+    safeSet('okText', 'textContent', `${addedCount} transactions added successfully.`);
     safeSet('okNotice', 'className', 'visible');
     setTimeout(() => { safeSet('okNotice', 'className', ''); }, 4000);
   }
@@ -605,7 +623,7 @@ function mergeDuplicates() {
   statsCache = null;
   saveToStorage();
   refreshAll();
-  safeSet('okText', 'textContent', '✅ ' + mergedCount + ' duplikat di-merge (amount dijumlahkan).');
+  safeSet('okText', 'textContent', '✅ ' + mergedCount + ' duplicates merged (amounts summed).');
   safeSet('okNotice', 'className', 'visible');
   setTimeout(() => { safeSet('okNotice', 'className', ''); }, 4000);
 }
@@ -795,7 +813,7 @@ function mergeDuplicates() {
    document.getElementById('tbl-badge').textContent = rows.length + ' rows';
    const tbody = document.getElementById('tblBody');
    if (!total) {
-     tbody.innerHTML = '<tr><td colspan="10" class="empty">Tidak ada data yang cocok</td></tr>';
+     tbody.innerHTML = '<tr><td colspan="10" class="empty">No matching data</td></tr>';
      document.getElementById('pagination').className = 'pagination hidden';
      return;
    }
@@ -810,7 +828,7 @@ function mergeDuplicates() {
        '<td style="font-size:12px">' + escHtml(r.date) + '</td>' +
        '<td style="font-weight:600">' + escHtml(r.player) + '</td>' +
        '<td><span class="pill ' + pill + '">' + escHtml(r.reason) + '</span></td>' +
-       '<td>' + (r.tag ? '<span class="pill pill-oth" style="cursor:pointer" onclick="quickEditTag(\'' + r.id + '\')" title="Klik untuk edit tag">' + escHtml(r.tag) + '</span>' : '<span style="color:#ccc;cursor:pointer;font-size:11px" onclick="quickEditTag(\'' + r.id + '\')">+ tag</span>') + '</td>' +
+       '<td>' + (r.tag ? '<span class="pill pill-oth" style="cursor:pointer" onclick="quickEditTag(\'' + r.id + '\')" title="Click to edit tag">' + escHtml(r.tag) + '</span>' : '<span style="color:#ccc;cursor:pointer;font-size:11px" onclick="quickEditTag(\'' + r.id + '\')">+ tag</span>') + '</td>' +
        '<td><span class="pill pill-oth">' + escHtml(r.currency || 'Silver') + '</span></td>' +
        '<td class="' + (r.amount>=0?'amount-pos':'amount-neg') + '">' + fmt(r.amount) + '</td>' +
        '<td style="font-weight:600;font-size:12px">' + fmt(bal) + '</td>' +
@@ -833,7 +851,7 @@ function renderPagination(total, totalPages, start) {
   container.className = 'pagination';
   const from = start + 1;
   const to = Math.min(start + rowsPerPage, total);
-  var html = '<span class="page-info">' + from + '-' + to + ' dari ' + total + ' transaksi</span>';
+  var html = '<span class="page-info">' + from + '-' + to + ' of ' + total + ' transactions</span>';
   html += '<div class="page-btns">';
   html += '<button onclick="goPage(' + (currentPage - 1) + ')" ' + (currentPage <= 1 ? 'disabled' : '') + '>‹</button>';
   var maxVisible = 7;
@@ -877,7 +895,7 @@ function changeRPP(n) {
 
 // ==================== CRUD ====================
 function deleteTransaction(id) {
-   if (!confirm('🗑️ Hapus transaksi ini secara permanen?')) return;
+   if (!confirm('🗑️ Delete this transaction permanently?')) return;
    const tx = rows.find(r => r.id === id);
    if (!tx) return;
    const index = rows.indexOf(tx);
@@ -896,7 +914,7 @@ function deleteTransaction(id) {
 
 function showUndoToast() {
   if (undoTimeout) clearTimeout(undoTimeout);
-  document.getElementById('undoToastText').innerHTML = `Transaksi dihapus. <strong>Undo?</strong>`;
+  document.getElementById('undoToastText').innerHTML = `Transaction deleted. <strong>Undo?</strong>`;
   const toast = document.getElementById('undoToast');
   toast.style.display = 'flex';
   toast.classList.add('show');
@@ -907,12 +925,12 @@ function undoDelete() {
    if (lastDeleted) {
      if (!lastDeleted.playerLc) lastDeleted.playerLc = lastDeleted.player.toLowerCase();
      if (!lastDeleted.reasonLc) lastDeleted.reasonLc = lastDeleted.reason.toLowerCase();
-     // Insert back at original position instead of pushing to end
-     const index = lastDeleted._originalIndex;
-     if (index !== undefined && index >= 0 && index <= rows.length) {
-       rows.splice(index, 0, lastDeleted);
+     // Insert based on date order instead of original index to maintain sort
+     const insertIndex = rows.findIndex(r => r.date > lastDeleted.date);
+     if (insertIndex !== -1) {
+       rows.splice(insertIndex, 0, lastDeleted);
      } else {
-       rows.push(lastDeleted); // fallback
+       rows.push(lastDeleted); // Append at end if no later date found
      }
      existingKeysCache.add(rowKey(lastDeleted));
      lastDeleted = null;
@@ -921,6 +939,7 @@ function undoDelete() {
        if (!r.playerLc) r.playerLc = r.player.toLowerCase();
        if (!r.reasonLc) r.reasonLc = r.reason.toLowerCase();
      });
+     // Merge and re-sort by date
      rows = rows.concat(lastBulkDeleted);
      lastBulkDeleted.forEach(function(r) { existingKeysCache.add(rowKey(r)); });
      lastBulkDeleted = null;
@@ -960,15 +979,15 @@ function saveEdit() {
    const newCurrency = document.getElementById('editCurrency').value;
    const newAmount = document.getElementById('editAmount').value;
    const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
-   if (!newDate) return showEditError('Tanggal tidak boleh kosong!');
-   if (!newPlayer) return showEditError('Player name tidak boleh kosong!');
-   if (!newReason) return showEditError('Reason tidak boleh kosong!');
-   if (!isValidDate(dateStr)) return showEditError('Format tanggal tidak valid!');
-   if (newAmount === '' || newAmount === null || newAmount === undefined) return showEditError('Amount tidak boleh kosong! Gunakan 0 untuk transaksi netral.');
+   if (!newDate) return showEditError('Date cannot be empty!');
+   if (!newPlayer) return showEditError('Player name cannot be empty!');
+   if (!newReason) return showEditError('Reason cannot be empty!');
+   if (!isValidDate(dateStr)) return showEditError('Invalid date format!');
+   if (newAmount === '' || newAmount === null || newAmount === undefined) return showEditError('Amount cannot be empty! Use 0 for neutral transactions.');
    const amountNum = parseFloat(newAmount);
-   if (isNaN(amountNum)) return showEditError('Amount harus berupa angka!');
-   if (!isFinite(amountNum)) return showEditError('Amount tidak valid (Infinity)!');
-   if (Math.abs(amountNum) > 9e15) return showEditError('Amount terlalu besar! Maks: 9.000.000.000.000.000');
+   if (isNaN(amountNum)) return showEditError('Amount must be a number!');
+   if (!isFinite(amountNum)) return showEditError('Amount is not valid (Infinity)!');
+   if (Math.abs(amountNum) > 9e15) return showEditError('Amount is too large! Max: 9,000,000,000,000,000');
    
    // Capture old values BEFORE overwriting
    const oldValues = {
@@ -1055,15 +1074,15 @@ function saveAdd() {
   const newCurrency = document.getElementById('addCurrency').value;
   const newAmount = document.getElementById('addAmount').value;
   const dateStr = newDate.length <= 16 ? newDate + ':00' : newDate;
-  if (!newDate) return showAddError('Tanggal tidak boleh kosong!');
-  if (!newPlayer) return showAddError('Player name tidak boleh kosong!');
-  if (!newReason) return showAddError('Reason tidak boleh kosong!');
-  if (!isValidDate(dateStr)) return showAddError('Format tanggal tidak valid!');
-  if (newAmount === '' || newAmount === null || newAmount === undefined) return showAddError('Amount tidak boleh kosong! Gunakan 0 untuk transaksi netral.');
+  if (!newDate) return showAddError('Date cannot be empty!');
+  if (!newPlayer) return showAddError('Player name cannot be empty!');
+  if (!newReason) return showAddError('Reason cannot be empty!');
+  if (!isValidDate(dateStr)) return showAddError('Invalid date format!');
+  if (newAmount === '' || newAmount === null || newAmount === undefined) return showAddError('Amount cannot be empty! Use 0 for neutral transactions.');
   const amountNum = parseFloat(newAmount);
-  if (isNaN(amountNum)) return showAddError('Amount harus berupa angka!');
-  if (!isFinite(amountNum)) return showAddError('Amount tidak valid (Infinity)!');
-  if (Math.abs(amountNum) > 9e15) return showAddError('Amount terlalu besar! Maks: 9.000.000.000.000.000');
+  if (isNaN(amountNum)) return showAddError('Amount must be a number!');
+  if (!isFinite(amountNum)) return showAddError('Amount is not valid (Infinity)!');
+  if (Math.abs(amountNum) > 9e15) return showAddError('Amount is too large! Max: 9,000,000,000,000,000');
   const entry = { date: dateStr, player: newPlayer, reason: newReason, tag: newTag || '', currency: newCurrency, amount: amountNum, id: generateId(), playerLc: newPlayer.toLowerCase(), reasonLc: newReason.toLowerCase() };
   rows.push(entry);
   existingKeysCache.add(rowKey(entry));
@@ -1076,7 +1095,7 @@ function saveAdd() {
   saveToStorage();
   refreshAll();
   const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').textContent = '✅ 1 transaksi ditambahkan.';
+  document.getElementById('dlToastText').textContent = '✅ 1 transaction added.';
   toast.classList.add('show');
   setTimeout(() => hideToast('dlToast'), 3000);
 }
@@ -1084,7 +1103,7 @@ function saveAdd() {
 function quickEditTag(id) {
   var tx = rows.find(function(r) { return r.id === id; });
   if (!tx) return;
-  var newTag = prompt('Edit tag untuk ' + tx.player + ' (kosongkan untuk hapus):', tx.tag || '');
+  var newTag = prompt('Edit tag for ' + tx.player + ' (leave empty to delete):', tx.tag || '');
   if (newTag === null) return;
   tx.tag = newTag.trim();
   balMapCache = null;
@@ -1141,13 +1160,13 @@ function renderPeriod() {
     }).join('');
     const wNetCls = w.net >= 0 ? 'green' : 'red';
     return `<div class="month-card">
-      <div class="month-label">Bulan ${w.ym} - Minggu ${w.week}</div>
+      <div class="month-label">Month ${w.ym} - Week ${w.week}</div>
       <div class="month-rows" style="margin-bottom:8px">
-        <div class="month-row"><span class="month-row-label">Total Masuk</span><span class="month-row-val green">+${fmt(w.dep)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Keluar</span><span class="month-row-val red">${fmt(w.wit)}</span></div>
-        <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">Net Minggu Ini</span><span class="month-row-val ${wNetCls}" style="font-size:13px">${w.net >= 0 ? '+' : ''}${fmt(w.net)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total In</span><span class="month-row-val green">+${fmt(w.dep)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Out</span><span class="month-row-val red">${fmt(w.wit)}</span></div>
+        <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">Net This Week</span><span class="month-row-val ${wNetCls}" style="font-size:13px">${w.net >= 0 ? '+' : ''}${fmt(w.net)}</span></div>
       </div>
-      <div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px;margin-top:8px">Rincian Harian:</div>
+      <div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px;margin-top:8px">Daily Breakdown:</div>
       ${daysHtml}
     </div>`;
   }).join('');
@@ -1187,122 +1206,99 @@ function renderMonthly() {
     const net = m.dep + m.wit;
     const netCls = net >= 0 ? 'green' : 'red';
     return `<div class="month-card">
-      <div class="month-label">📅 ${monthLabel(ym)}<span class="month-cnt">${m.count} transaksi</span></div>
+      <div class="month-label">📅 ${monthLabel(ym)}<span class="month-cnt">${m.count} transactions</span></div>
       <div class="month-rows">
-        <div class="month-row"><span class="month-row-label">Saldo Awal (Tgl 1)</span><span class="month-row-val">${fmt(m.openBal)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Masuk</span><span class="month-row-val green">+${fmt(m.dep)}</span></div>
-        <div class="month-row"><span class="month-row-label">Total Keluar</span><span class="month-row-val red">${fmt(m.wit)}</span></div>
-        <div class="month-row"><span class="month-row-label">Net Bulan Ini</span><span class="month-row-val ${netCls}">${net>=0?'+':''}${fmt(net)}</span></div>
+        <div class="month-row"><span class="month-row-label">Starting Balance (1st)</span><span class="month-row-val">${fmt(m.openBal)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total In</span><span class="month-row-val green">+${fmt(m.dep)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Out</span><span class="month-row-val red">${fmt(m.wit)}</span></div>
+        <div class="month-row"><span class="month-row-label">Net This Month</span><span class="month-row-val ${netCls}">${net>=0?'+':''}${fmt(net)}</span></div>
       </div>
       <hr class="month-divider">
-      <div class="month-row"><span class="month-row-label" style="font-weight:600">Saldo Akhir</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
+      <div class="month-row"><span class="month-row-label" style="font-weight:600">Ending Balance</span><span class="month-bal amber">${fmt(m.closeBal)}</span></div>
     </div>`;
   }).join('');
 }
 
-// ==================== CHART ====================
-function renderChart() {
-  const container = document.getElementById('chartContainer');
-  const {monthOrder, monthMap} = buildMonthlyData();
-  if (!monthOrder.length) {
-    container.innerHTML = '<div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
-    return;
-  }
-  const type = document.getElementById('chartType').value;
-  const metric = document.getElementById('chartMetric').value;
-  const labels = monthOrder.map(ym => monthLabel(ym));
-  const values = monthOrder.map(ym => {
-    const m = monthMap[ym];
-    if (metric === 'net') return m.dep + m.wit;
-    if (metric === 'dep') return m.dep;
-    if (metric === 'wit') return Math.abs(m.wit);
-    if (metric === 'count') return m.count;
-    return 0;
-  });
-  const maxVal = Math.max.apply(null, values.concat([1]));
-  const minVal = Math.min.apply(null, values);
-  const hasNeg = minVal < 0;
-  const chartH = 220;
-  const padL = 60, padR = 10, padT = 10, padB = 50;
-  const W = Math.max(600, labels.length * 80);
-  const chartW = W - padL - padR;
-  const chartH2 = chartH - padT - padB;
-  const zeroY = hasNeg ? padT + chartH2 / 2 : padT + chartH2;
-  const scaleH = hasNeg ? chartH2 / 2 : chartH2;
+// ==================== RECAP TABS ====================
+function switchRecapTab(type) {
+  try {
+    const dailyPanel = document.getElementById('recapDaily');
+    const weeklyPanel = document.getElementById('recapWeekly');
+    const monthlyPanel = document.getElementById('recapMonthly');
+    
+    if (dailyPanel) dailyPanel.style.display = 'none';
+    if (weeklyPanel) weeklyPanel.style.display = 'none';
+    if (monthlyPanel) monthlyPanel.style.display = 'none';
 
-  let svg = '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + chartH + '" xmlns="http://www.w3.org/2000/svg">';
-
-  // Grid lines
-  var steps = 4;
-  for (var i = 0; i <= steps; i++) {
-    var y = padT + (chartH2 / steps) * i;
-    var val = hasNeg ? maxVal - (maxVal - minVal) * (i / steps) : maxVal * (1 - i / steps);
-    svg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#e2e8f0" stroke-width="1"/>';
-    svg += '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="9" fill="#94a3b8">' + shortNum(val) + '</text>';
-  }
-  if (hasNeg) {
-    svg += '<line x1="' + padL + '" y1="' + zeroY + '" x2="' + (W - padR) + '" y2="' + zeroY + '" stroke="#94a3b8" stroke-width="1.5"/>';
-  }
-
-  var barW = Math.min(40, (chartW / labels.length) * 0.6);
-  var gap = chartW / labels.length;
-
-  if (type === 'bar' || type === 'both') {
-    for (var j = 0; j < values.length; j++) {
-      var x = padL + gap * j + (gap - barW) / 2;
-      var v = values[j];
-      var barH = (Math.abs(v) / (hasNeg ? Math.max(maxVal, Math.abs(minVal)) : maxVal)) * scaleH;
-      var barY = v >= 0 ? zeroY - barH : zeroY;
-      var color = v >= 0 ? '#1D9E75' : '#D85A30';
-      svg += '<rect x="' + x + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="3" opacity="0.85">';
-      svg += '<title>' + labels[j] + ': ' + fmt(v) + '</title></rect>';
-    }
-  }
-
-  if (type === 'line' || type === 'both') {
-    var pts = [];
-    for (var k = 0; k < values.length; k++) {
-      var px = padL + gap * k + gap / 2;
-      var py = zeroY - (values[k] / (hasNeg ? Math.max(maxVal, Math.abs(minVal)) : maxVal)) * scaleH;
-      pts.push({ x: px, y: py, v: values[k], label: labels[k] });
-    }
-    if (pts.length > 1) {
-      var pathD = pts.map(function(p, i) { return (i === 0 ? 'M' : 'L') + p.x + ' ' + p.y; }).join(' ');
-      svg += '<path d="' + pathD + '" fill="none" stroke="#1e40af" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>';
-    }
-    pts.forEach(function(p) {
-      svg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="4" fill="#1e40af" stroke="#fff" stroke-width="1.5">';
-      svg += '<title>' + p.label + ': ' + fmt(p.v) + '</title></circle>';
+    document.querySelectorAll('[data-recap]').forEach(btn => {
+      btn.classList.remove('active');
     });
-  }
+    const activeBtn = document.querySelector(`[data-recap="${type}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
 
-  // X labels
-  for (var l = 0; l < labels.length; l++) {
-    var lx = padL + gap * l + gap / 2;
-    svg += '<text x="' + lx + '" y="' + (chartH - 4) + '" text-anchor="middle" font-size="9" fill="#64748b" transform="rotate(-30,' + lx + ',' + (chartH - 4) + ')">' + labels[l] + '</text>';
+    if (type === 'daily' && dailyPanel) {
+      dailyPanel.style.display = 'block';
+      renderDailyRecap();
+    } else if (type === 'weekly' && weeklyPanel) {
+      weeklyPanel.style.display = 'block';
+      renderPeriod();
+    } else if (type === 'monthly' && monthlyPanel) {
+      monthlyPanel.style.display = 'block';
+      renderMonthly();
+    }
+  } catch (error) {
+    console.error('❌ Error in switchRecapTab:', error);
   }
-
-  svg += '</svg>';
-
-  // Legend
-  var legend = '<div class="chart-legend">';
-  if (type === 'bar' || type === 'both') {
-    legend += '<span><span class="dot" style="background:#1D9E75"></span> Positif</span>';
-    legend += '<span><span class="dot" style="background:#D85A30"></span> Negatif</span>';
-  }
-  if (type === 'line' || type === 'both') {
-    legend += '<span><span class="dot" style="background:#1e40af"></span> Trend</span>';
-  }
-  legend += '</div>';
-
-  container.innerHTML = '<div class="chart-wrap">' + svg + '<div class="chart-tooltip" id="chartTip"></div></div>' + legend;
 }
 
-function shortNum(n) {
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return Math.round(n).toString();
+function initRecapTabs() {
+  if (recapInitialized) return;
+  recapInitialized = true;
+  const dailyPanel = document.getElementById('recapDaily');
+  if (dailyPanel) {
+    dailyPanel.style.display = 'block';
+    renderDailyRecap();
+  }
+  renderPeriod();
+  renderMonthly();
+}
+
+function renderDailyRecap() {
+  const grouped = {};
+  const sorted = sortedRowsCache && sortedRowsCache.length === rows.length
+    ? [...sortedRowsCache].reverse()
+    : [...rows].sort((a,b) => b.date.localeCompare(a.date));
+  
+  sorted.forEach(r => {
+    const ymd = r.date.substring(0,10);
+    if (!grouped[ymd]) grouped[ymd] = { date: ymd, net: 0, dep: 0, wit: 0, count: 0 };
+    grouped[ymd].net += r.amount;
+    grouped[ymd].count++;
+    if (r.amount > 0) grouped[ymd].dep += r.amount;
+    else grouped[ymd].wit += r.amount;
+  });
+  
+  const container = document.getElementById('dailyGrid');
+  const keys = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
+  
+  if (!keys.length) {
+    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#aaa;font-size:13px">Belum ada data</div>';
+    return;
+  }
+  
+  container.innerHTML = keys.map(date => {
+    const d = grouped[date];
+    const netCls = d.net >= 0 ? 'green' : 'red';
+    return `<div class="month-card">
+      <div class="month-label">📆 ${date}</div>
+      <div class="month-rows">
+        <div class="month-row"><span class="month-row-label">Total In</span><span class="month-row-val green">+${fmt(d.dep)}</span></div>
+        <div class="month-row"><span class="month-row-label">Total Out</span><span class="month-row-val red">${fmt(d.wit)}</span></div>
+        <div class="month-row" style="margin-top:4px"><span class="month-row-label" style="font-weight:600;color:#333">Net</span><span class="month-row-val ${netCls}" style="font-size:13px">${d.net >= 0 ? '+' : ''}${fmt(d.net)}</span></div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:4px;text-align:right">${d.count} transactions</div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ==================== SORT ====================
@@ -1336,7 +1332,7 @@ function applySortClasses() {
 // ==================== DOWNLOAD EXCEL ====================
 function autoDownloadExcel() {
   if (typeof XLSX === 'undefined') {
-    return alert('⚠️ Library XLSX (SheetJS) belum dimuat. Pastikan koneksi internet tersedia.\n\nAlternatif: Export CSV.');
+    return alert('⚠️ XLSX library (SheetJS) not loaded. Ensure internet connection is available.\n\nAlternative: Export CSV.');
   }
   showLoading('Membuat Excel...');
   setTimeout(() => {
@@ -1350,14 +1346,14 @@ function autoDownloadExcel() {
     sorted.forEach((r,i) => txAoa.push([i+1, r.date, r.player, r.reason, r.amount, balMap[rowKey(r)] ?? '']));
     const ws1 = XLSX.utils.aoa_to_sheet(txAoa);
     ws1['!cols'] = [{wch:5},{wch:22},{wch:16},{wch:14},{wch:14},{wch:18}];
-    XLSX.utils.book_append_sheet(wb, ws1, 'Log Transaksi');
+    XLSX.utils.book_append_sheet(wb, ws1, 'Transaction Log');
 
     const periodData = buildPeriodData();
     const pKeys = Object.keys(periodData).sort((a,b) => b.localeCompare(a));
-    const pAoa = [['Bulan - Minggu','Tanggal / Periode','Total Masuk','Total Keluar','Net']];
+    const pAoa = [['Month - Week','Date / Period','Total In','Total Out','Net']];
     pKeys.forEach(k => {
       const w = periodData[k];
-      pAoa.push([`Bulan ${w.ym} - Minggu ${w.week}`, 'Mingguan', w.dep, w.wit, w.net]);
+      pAoa.push([`Month ${w.ym} - Week ${w.week}`, 'Weekly', w.dep, w.wit, w.net]);
       const dKeys = Object.keys(w.days).sort((a,b)=>b.localeCompare(a));
       dKeys.forEach(d => {
         const dayData = w.days[d];
@@ -1366,10 +1362,10 @@ function autoDownloadExcel() {
     });
     const wsP = XLSX.utils.aoa_to_sheet(pAoa);
     wsP['!cols'] = [{wch:25},{wch:18},{wch:15},{wch:15},{wch:15}];
-    XLSX.utils.book_append_sheet(wb, wsP, 'Rekap Mingguan & Harian');
+    XLSX.utils.book_append_sheet(wb, wsP, 'Weekly & Daily Summary');
 
     const {monthOrder, monthMap} = buildMonthlyData();
-    const mAoa = [['Bulan','Saldo Awal (Tgl 1)','Total Masuk','Total Keluar','Net','Saldo Akhir','Jumlah Transaksi']];
+    const mAoa = [['Month','Starting Balance (1st)','Total In','Total Out','Net','Ending Balance','Transaction Count']];
     monthOrder.forEach(ym => {
       const m = monthMap[ym];
       mAoa.push([monthLabel(ym), m.openBal, m.dep, m.wit, m.dep+m.wit, m.closeBal, m.count]);
@@ -1379,14 +1375,14 @@ function autoDownloadExcel() {
     mAoa.push(['TOTAL','',''+totalDep,''+totalWit,''+(totalDep+totalWit),'',''+rows.length]);
     const ws2 = XLSX.utils.aoa_to_sheet(mAoa);
     ws2['!cols'] = [{wch:12},{wch:20},{wch:16},{wch:16},{wch:14},{wch:16},{wch:18}];
-    XLSX.utils.book_append_sheet(wb, ws2, 'Rekap Bulanan');
+    XLSX.utils.book_append_sheet(wb, ws2, 'Monthly Summary');
 
     const now = new Date();
     const ws3 = XLSX.utils.aoa_to_sheet([
       ['Guild Treasury — Albion Online ' + APP_VERSION],
       ['Generated', now.toLocaleString('id-ID')],
       ['Initial Balance', init],
-      ['Total Transaksi', rows.length],
+      ['Total Transactions', rows.length],
       ['Filtered', filtered.length > 0 ? filtered.length : rows.length],
       ['Current Balance', init + rows.reduce((s,r) => s + r.amount, 0)]
     ]);
@@ -1423,16 +1419,16 @@ function exportCSV() {
   a.click();
   URL.revokeObjectURL(url);
   const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').innerHTML = `✅ CSV berhasil diunduh! (${exportRows.length} tx)`;
+  document.getElementById('dlToastText').innerHTML = `✅ CSV downloaded successfully! (${exportRows.length} tx)`;
   toast.classList.add('show');
   setTimeout(() => hideToast('dlToast'), 3000);
 }
 
 function exportPDF() {
   if (typeof XLSX === 'undefined') {
-    return alert('⚠️ Library XLSX (SheetJS) belum dimuat. Pastikan koneksi internet tersedia.');
+    return alert('⚠️ XLSX library (SheetJS) not loaded. Ensure internet connection is available.');
   }
-  if (!rows.length) return alert('Tidak ada data');
+  if (!rows.length) return alert('No data available');
   const filtered = getFilteredRows();
   const exportRows = filtered.length > 0 ? filtered : rows;
   const balMap = balMapCache || buildBalMap();
@@ -1463,17 +1459,17 @@ function exportPDF() {
   html += '</style></head><body>';
 
   html += '<div class="rpt-header"><h1>Guild Treasury — Albion Online</h1>';
-  html += '<p>Laporan: ' + new Date().toLocaleString('id-ID') + ' | ' + sorted.length + ' transaksi</p></div>';
+  html += '<p>Report: ' + new Date().toLocaleString('id-ID') + ' | ' + sorted.length + ' transactions</p></div>';
 
   html += '<div class="rpt-summary">';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Saldo Awal</div><div class="rpt-stat-value">' + fmt(init) + '</div></div>';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Masuk</div><div class="rpt-stat-value green">+' + fmt(totalDep) + '</div></div>';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Keluar</div><div class="rpt-stat-value red">' + fmt(totalWit) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Starting Balance</div><div class="rpt-stat-value">' + fmt(init) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total In</div><div class="rpt-stat-value green">+' + fmt(totalDep) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Total Out</div><div class="rpt-stat-value red">' + fmt(totalWit) + '</div></div>';
   html += '<div class="rpt-stat"><div class="rpt-stat-label">Net</div><div class="rpt-stat-value ' + (net >= 0 ? 'green' : 'red') + '">' + (net >= 0 ? '+' : '') + fmt(net) + '</div></div>';
-  html += '<div class="rpt-stat"><div class="rpt-stat-label">Saldo Akhir</div><div class="rpt-stat-value amber">' + fmt(init + net) + '</div></div>';
+  html += '<div class="rpt-stat"><div class="rpt-stat-label">Ending Balance</div><div class="rpt-stat-value amber">' + fmt(init + net) + '</div></div>';
   html += '</div>';
 
-  html += '<table><thead><tr><th>#</th><th>Tanggal</th><th>Player</th><th>Reason</th><th>Amount</th><th>Balance</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>#</th><th>Date</th><th>Player</th><th>Reason</th><th>Amount</th><th>Balance</th></tr></thead><tbody>';
   sorted.forEach(function(r, i) {
     var bal = balMap[rowKey(r)] ?? '';
     var cls = r.amount >= 0 ? 'amount-pos' : 'amount-neg';
@@ -1493,15 +1489,24 @@ function exportPDF() {
 
 // ==================== TAB SWITCH ====================
 function switchTab(n) {
-  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === n));
+  // Ignore if NaN (sub-tab buttons don't have data-tab)
+  if (isNaN(n)) return;
+  
+  document.querySelectorAll('.tab-btn[data-tab]').forEach((b, i) => b.classList.toggle('active', i === n));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   const panel = document.getElementById('tab-' + n);
   if (panel) panel.classList.add('active');
+  
+  // When switching to Recap tab (index 1), initialize recap data
+  if (n === 1) {
+    initRecapTabs();
+  }
 }
 
 // ==================== BULK SELECT & DELETE ====================
 function toggleSelect(id, cb) {
   if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+  updateSelectAllCheckbox();
   updateBulkBar();
 }
 
@@ -1515,7 +1520,30 @@ function toggleSelect(id, cb) {
       if (filteredIds.has(id)) selectedIds.delete(id);
     }
   }
+  updateSelectAllCheckbox();
   renderTable();
+}
+
+function updateSelectAllCheckbox() {
+  const filtered = getFilteredRows();
+  if (filtered.length === 0) {
+    document.getElementById('selectAllCb').checked = false;
+    document.getElementById('selectAllCb').indeterminate = false;
+    return;
+  }
+  const selectedCount = filtered.filter(r => selectedIds.has(r.id)).length;
+  const selectAllCb = document.getElementById('selectAllCb');
+  
+  if (selectedCount === 0) {
+    selectAllCb.checked = false;
+    selectAllCb.indeterminate = false;
+  } else if (selectedCount === filtered.length) {
+    selectAllCb.checked = true;
+    selectAllCb.indeterminate = false;
+  } else {
+    selectAllCb.checked = false;
+    selectAllCb.indeterminate = true;
+  }
 }
 
 function selectAllVisible() {
@@ -1525,14 +1553,14 @@ function selectAllVisible() {
 
 function clearSelection() {
   selectedIds.clear();
-  document.getElementById('selectAllCb').checked = false;
+  updateSelectAllCheckbox();
   renderTable();
 }
 
 function updateBulkBar() {
   const bar = document.getElementById('bulkBar');
   const count = selectedIds.size;
-  document.getElementById('bulkCountBar').textContent = count + ' dipilih';
+  document.getElementById('bulkCountBar').textContent = count + ' selected';
   if (count > 0) {
     bar.classList.add('visible');
   } else {
@@ -1560,7 +1588,7 @@ function confirmBulkDelete() {
    logAudit('bulk_delete', { count: count, ids: Array.from(selectedIds) });
    selectedIds.clear();
    closeBulkModal();
-   document.getElementById('selectAllCb').checked = false;
+   updateSelectAllCheckbox();
    balMapCache = null;
    sortedRowsCache = null;
    statsCache = null;
@@ -1568,7 +1596,7 @@ function confirmBulkDelete() {
    refreshAll();
   const toast = document.getElementById('undoToast');
   if (toast) {
-    safeSet('undoToastText', 'innerHTML', `🗑 ${count} transaksi dihapus. <strong>Undo?</strong>`);
+    safeSet('undoToastText', 'innerHTML', `🗑 ${count} transactions deleted. <strong>Undo?</strong>`);
     toast.style.display = 'flex';
     toast.classList.add('show');
   }
@@ -1583,13 +1611,14 @@ function resetAll() {
     safeSet('logInput', 'value', '');
     safeSet('excelFile', 'value', '');
     safeSet('uploadZone', 'className', 'upload-zone');
-    safeSet('uploadZoneText', 'innerHTML', '📂 Klik atau drag &amp; drop file Excel / JSON di sini');
+    safeSet('uploadZoneText', 'innerHTML', '📂 Click or drag &amp; drop Excel / JSON file here');
     safeSet('dupNotice', 'style.display', 'none');
     safeSet('okNotice', 'className', '');
     balMapCache = null;
     sortedRowsCache = null;
     statsCache = null;
     filterCache = { players: null, reasons: null, tags: null, currencies: null, version: -1 };
+    updateSelectAllCheckbox();
     saveToStorage();
     refreshAll();
     return;
@@ -1603,7 +1632,7 @@ function closeResetModal() {
 }
 
 async function confirmReset() {
-  showLoading('Membuat backup...');
+  showLoading('Creating backup...');
   let backupOk = false;
   try {
     const data = { version: APP_VERSION, timestamp: Date.now(), initBal: parseFloat(document.getElementById('initBal').value)||0, rows };
@@ -1618,7 +1647,7 @@ async function confirmReset() {
     backupOk = true;
   } catch(e) {
     hideLoading();
-    return alert('❌ Gagal membuat backup. Reset dibatalkan.');
+    return alert('❌ Failed to create backup. Reset cancelled.');
   }
   if (!backupOk) { hideLoading(); return; }
    existingKeysCache.clear();
@@ -1628,7 +1657,7 @@ async function confirmReset() {
    document.getElementById('logInput').value = '';
    document.getElementById('excelFile').value = '';
    document.getElementById('uploadZone').className = 'upload-zone';
-   document.getElementById('uploadZoneText').innerHTML = '📂 Klik atau drag &amp; drop file Excel / JSON di sini';
+   document.getElementById('uploadZoneText').innerHTML = '📂 Click or drag &amp; drop Excel / JSON file here';
    document.getElementById('dupNotice').style.display = 'none';
    document.getElementById('okNotice').className = '';
    closeResetModal();
@@ -1640,7 +1669,7 @@ async function confirmReset() {
    refreshAll();
   hideLoading();
   const toast = document.getElementById('dlToast');
-  document.getElementById('dlToastText').textContent = '✅ Data direset. Backup telah diunduh.';
+  document.getElementById('dlToastText').textContent = '✅ Data reset. Backup has been downloaded.';
   toast.classList.add('show');
   setTimeout(() => hideToast('dlToast'), 4000);
 }
@@ -1683,7 +1712,7 @@ function hideToast(id) {
 }
 
 function showLoading(text) {
-  document.getElementById('loadingText').textContent = text || 'Memproses...';
+  document.getElementById('loadingText').textContent = text || 'Processing...';
   document.getElementById('loadingOverlay').classList.add('visible');
 }
 
@@ -1697,14 +1726,13 @@ function hideLoading() {
   balMapCache = null;
   sortedRowsCache = null;
   statsCache = null;
+  recapInitialized = false; // Allow recap re-initialization after data changes
   // Rebuild existingKeysCache to reflect any edits
   existingKeysCache = new Set(rows.map(rowKey));
   updateFilters();
   recalc();
   renderTable();
-  renderPeriod();
-  renderMonthly();
-  renderChart();
+  initRecapTabs();  // Initialize and pre-render all recap data
   updateDownloadBtn();
   updateStorageBadge();
 }
@@ -1728,7 +1756,7 @@ function hideLoading() {
       saveToStorage().then(() => {
         const toast = document.getElementById('dlToast');
         if (toast) {
-          safeSet('dlToastText', 'textContent', '💾 Data tersimpan!');
+          safeSet('dlToastText', 'textContent', '💾 Data saved!');
           toast.classList.add('show');
           setTimeout(() => hideToast('dlToast'), 2000);
         }
@@ -1760,19 +1788,21 @@ window.onload = async function () {
   // CRITICAL: Unregister old Service Workers that may serve stale cached content
   // This fixes the "syphon functions not defined" crash for users with old SW cache
   if ('serviceWorker' in navigator) {
-    var hasOldSw = navigator.serviceWorker.controller;
-    var lastCleanup = sessionStorage.getItem('swCleanupDone');
-    if (hasOldSw && !lastCleanup) {
+    try {
       var regs = await navigator.serviceWorker.getRegistrations();
       for (var i = 0; i < regs.length; i++) {
-        regs[i].unregister();
+        await regs[i].unregister();
       }
-      sessionStorage.setItem('swCleanupDone', '1');
-      // Reload once to load fresh content without old SW
-      window.location.reload();
-      return;
+      // Clear all caches
+      if ('caches' in window) {
+        var cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(function(name) { return caches.delete(name); }));
+      }
+    } catch(e) {
+      console.warn('Service worker cleanup error:', e);
     }
   }
+  
   try {
     await initDB();
     try {
@@ -1822,7 +1852,7 @@ window.onload = async function () {
       handleFileSelect(e);
     });
     if (localStorage.getItem(STORAGE_KEY)) {
-      document.getElementById('uploadZoneText').innerHTML += `<br><small style="color:#15803d">💡 Ada data tersimpan — klik "Load from Browser"</small>`;
+      document.getElementById('uploadZoneText').innerHTML += `<br><small style="color:#15803d">💡 There is saved data — click "Load from Browser"</small>`;
     }
     const oldKey = 'albionGuildTreasuryV61';
     if (!localStorage.getItem(STORAGE_KEY) && localStorage.getItem(oldKey)) {
@@ -1846,7 +1876,7 @@ window.onload = async function () {
     registerPWA();
   } catch(err) {
     console.error('App init error:', err);
-    document.body.innerHTML = '<div style="text-align:center;margin-top:100px;font-size:18px;color:#dc2626">❌ App gagal dimuat. Buka Console (F12) untuk detail error.</div>';
+    document.body.innerHTML = '<div style="text-align:center;margin-top:100px;font-size:18px;color:#dc2626">❌ App failed to load. Open Console (F12) for error details.</div>';
   }
 };
 
@@ -1863,7 +1893,13 @@ function registerPWA() {
         newWorker.addEventListener('statechange', function() {
           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
             // New SW installed — force reload to get fresh content
-            window.location.reload();
+            // Use debounce to prevent infinite reload loop
+            var lastReload = sessionStorage.getItem('swLastReload');
+            var now = Date.now();
+            if (!lastReload || (now - parseInt(lastReload)) > 10000) {
+              sessionStorage.setItem('swLastReload', now);
+              window.location.reload();
+            }
           }
         });
       });
@@ -1902,7 +1938,7 @@ function registerPWA() {
       deferredPrompt.prompt();
       deferredPrompt.userChoice.then(function(result) {
         if (result.outcome === 'accepted') {
-          showToast('✅ Aplikasi berhasil diinstall!', 3000);
+          showToast('✅ App installed successfully!', 3000);
         }
         deferredPrompt = null;
       });
@@ -1935,7 +1971,7 @@ function showUpdateBanner() {
   window.addEventListener('beforeunload', function(e) {
     if (rows.length > 0) {
       e.preventDefault();
-      e.returnValue = 'Ada ' + rows.length + ' transaksi yang belum di-export. Yakin ingin keluar?';
+      e.returnValue = 'You have ' + rows.length + ' transactions that have not been exported. Are you sure you want to leave?';
     }
   });
 
@@ -1944,6 +1980,9 @@ function showUpdateBanner() {
   window.recalc = recalc;
   window.renderMonthly = renderMonthly;
   window.renderPeriod = renderPeriod;
+  window.renderDailyRecap = renderDailyRecap;
+  window.initRecapTabs = initRecapTabs;
+  window.switchRecapTab = switchRecapTab;
   window.saveToStorage = saveToStorage;
   window.toggleDarkMode = toggleDarkMode;
   window.logout = logout;
@@ -1984,6 +2023,5 @@ function showUpdateBanner() {
   window.changeRPP = changeRPP;
   window.applySort = applySort;
   window.mergeDuplicates = mergeDuplicates;
-  window.renderChart = renderChart;
   window.quickEditTag = quickEditTag;
 })();
