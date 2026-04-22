@@ -20,41 +20,41 @@
   --syphon-light: #a78bfa;
   --syphon-dark: #7c3aed;
 
-  /* Background Gradients - Light Mode */
-  --bg-light: linear-gradient(135deg, #4f46e5 0%, #7c3aed 40%, #a855f7 100%);
-  --bg-syphon: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 50%, #4c1d95 100%);
+  /* Background Gradients - Light Mode (White/Bright) */
+  --bg-light: linear-gradient(135deg, #e0e7ff 0%, #f3e8ff 50%, #faf5ff 100%);
+  --bg-syphon: linear-gradient(135deg, #f3e8ff 0%, #ede9fe 50%, #faf5ff 100%);
 
-  /* Background Gradients - Dark Mode */
-  --bg-dark: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #312e81 100%);
-  --bg-syphon-dark: linear-gradient(135deg, #1e1b4b 0%, #2e1065 50%, #3b0764 100%);
+  /* Background Gradients - Dark Mode (Black/Dark) */
+  --bg-dark: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%);
+  --bg-syphon-dark: linear-gradient(135deg, #0f0a1a 0%, #1a0a2e 50%, #2a1a3e 100%);
 
   /* Card & Surface Colors */
   --card-bg: #ffffff;
-  --card-bg-dark: #1e293b;
+  --card-bg-dark: #121212;
   --card-surface: #f8fafc;
-  --card-surface-dark: #0f172a;
+  --card-surface-dark: #1a1a1a;
 
   /* Text Colors - Light Mode */
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
+  --text-primary: #1a1a2e;
+  --text-secondary: #4a4a6a;
+  --text-muted: #8888a8;
 
   /* Text Colors - Dark Mode */
-  --text-primary-dark: #f8fafc;
-  --text-secondary-dark: #cbd5e1;
-  --text-muted-dark: #64748b;
+  --text-primary-dark: #f5f5f5;
+  --text-secondary-dark: #c0c0c0;
+  --text-muted-dark: #808080;
 
   /* Border Colors */
   --border: #e2e8f0;
   --border-light: #f1f5f9;
-  --border-dark: #334155;
-  --border-dark-light: #475569;
+  --border-dark: #2a2a2a;
+  --border-dark-light: #3a3a3a;
 
   /* Input Backgrounds */
-  --input-bg: #f1f5f9;
-  --input-bg-dark: #0f172a;
+  --input-bg: #f5f5f7;
+  --input-bg-dark: #1e1e1e;
   --input-focus-ring: rgba(79, 70, 229, 0.2);
-  --input-focus-ring-dark: rgba(99, 102, 241, 0.3);
+  --input-focus-ring-dark: rgba(120, 100, 255, 0.3);
 
   /* Error States */
   --error-bg: #fef2f2;
@@ -73,13 +73,13 @@
   --success-text-dark: #bbf7d0;
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  --shadow-glow: 0 0 40px rgba(79, 70, 229, 0.15);
-  --shadow-glow-dark: 0 0 40px rgba(99, 102, 241, 0.1);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.15);
+  --shadow-2xl: 0 24px 64px rgba(0, 0, 0, 0.2);
+  --shadow-glow: 0 0 40px rgba(79, 70, 229, 0.1);
+  --shadow-glow-dark: 0 0 60px rgba(120, 100, 255, 0.05);
 
   /* Border Radius */
   --radius-sm: 8px;
@@ -196,7 +196,7 @@ body.dark .dark-toggle {
 
 body.dark .login-wrap {
   background: var(--card-bg-dark);
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 /* ===== Header ===== */
@@ -311,15 +311,15 @@ body.dark .tracker-btn {
 }
 
 body.dark .tracker-btn:hover {
-  border-color: var(--primary-light);
-  background: rgba(99, 102, 241, 0.15);
-  color: var(--primary-light);
+  border-color: #7c66e5;
+  background: rgba(120, 100, 255, 0.12);
+  color: #a78bfa;
 }
 
 body.dark .tracker-btn.syphon:hover {
-  border-color: var(--syphon-light);
-  background: rgba(167, 139, 250, 0.15);
-  color: var(--syphon-light);
+  border-color: #a78bfa;
+  background: rgba(167, 139, 250, 0.12);
+  color: #c4b5fd;
 }
 
 /* ===== Form ===== */
@@ -361,9 +361,9 @@ body.dark .login-form input {
 }
 
 body.dark .login-form input:focus {
-  border-color: var(--primary-light);
-  background: var(--card-bg-dark);
-  box-shadow: 0 0 0 4px var(--input-focus-ring-dark);
+  border-color: #7c66e5;
+  background: #252525;
+  box-shadow: 0 0 0 3px var(--input-focus-ring-dark);
 }
 
 /* ===== Buttons ===== */
@@ -458,8 +458,8 @@ body.dark .setup-btn {
 
 body.dark .setup-btn:hover {
   background: rgba(255, 255, 255, 0.05);
-  border-color: var(--primary);
-  color: var(--primary);
+  border-color: #7c66e5;
+  color: #a78bfa;
 }
 
 /* ===== Messages ===== */
@@ -493,15 +493,15 @@ body.dark .setup-btn:hover {
 }
 
 body.dark .error-msg {
-  background: var(--error-bg-dark);
+  background: #2a1010;
   border-color: #dc2626;
-  color: var(--error-text-dark);
+  color: #fca5a5;
 }
 
 body.dark .success-msg {
-  background: var(--success-bg-dark);
+  background: #102a10;
   border-color: #22c55e;
-  color: var(--success-text-dark);
+  color: #86efac;
 }
 
 /* ===== Hint Text ===== */
@@ -515,7 +515,7 @@ body.dark .success-msg {
 }
 
 body.dark .hint {
-  color: var(--text-secondary-dark);
+  color: #808080;
 }
 
 /* ===== Divider ===== */
@@ -543,11 +543,11 @@ body.dark .hint {
 
 body.dark .divider::before,
 body.dark .divider::after {
-  background: var(--border-dark);
+  background: #333333;
 }
 
 body.dark .divider span {
-  color: var(--text-secondary-dark);
+  color: #808080;
 }
 
 /* ===== Footer ===== */
@@ -571,7 +571,7 @@ body.dark .divider span {
 }
 
 body.dark .login-footer {
-  border-color: var(--border-dark);
+  border-color: #333333;
 }
 
 /* ===== Responsive ===== */
