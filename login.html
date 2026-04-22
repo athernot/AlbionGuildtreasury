@@ -9,44 +9,91 @@
 <style>
 /* ===== CSS Variables for Design System ===== */
 :root {
-  --primary: #667eea;
-  --primary-dark: #5a67d8;
-  --secondary: #764ba2;
+  /* Primary Colors - Treasury Theme */
+  --primary: #4f46e5;
+  --primary-light: #6366f1;
+  --primary-dark: #4338ca;
+  --secondary: #7c3aed;
+
+  /* Syphon Energy Theme */
   --syphon-primary: #8b5cf6;
+  --syphon-light: #a78bfa;
   --syphon-dark: #7c3aed;
-  --bg-light: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  --bg-dark: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-  --bg-syphon: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
-  --bg-syphon-dark: linear-gradient(135deg, #2e1065 0%, #1e1b4b 100%);
+
+  /* Background Gradients - Light Mode */
+  --bg-light: linear-gradient(135deg, #4f46e5 0%, #7c3aed 40%, #a855f7 100%);
+  --bg-syphon: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 50%, #4c1d95 100%);
+
+  /* Background Gradients - Dark Mode */
+  --bg-dark: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #312e81 100%);
+  --bg-syphon-dark: linear-gradient(135deg, #1e1b4b 0%, #2e1065 50%, #3b0764 100%);
+
+  /* Card & Surface Colors */
   --card-bg: #ffffff;
   --card-bg-dark: #1e293b;
-  --text-primary: #1e293b;
-  --text-primary-dark: #f1f5f9;
-  --text-secondary: #64748b;
-  --text-secondary-dark: #94a3b8;
+  --card-surface: #f8fafc;
+  --card-surface-dark: #0f172a;
+
+  /* Text Colors - Light Mode */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+
+  /* Text Colors - Dark Mode */
+  --text-primary-dark: #f8fafc;
+  --text-secondary-dark: #cbd5e1;
+  --text-muted-dark: #64748b;
+
+  /* Border Colors */
   --border: #e2e8f0;
+  --border-light: #f1f5f9;
   --border-dark: #334155;
-  --input-bg: #f8fafc;
+  --border-dark-light: #475569;
+
+  /* Input Backgrounds */
+  --input-bg: #f1f5f9;
   --input-bg-dark: #0f172a;
-  --error-bg: #fee2e2;
-  --error-border: #fca5a5;
+  --input-focus-ring: rgba(79, 70, 229, 0.2);
+  --input-focus-ring-dark: rgba(99, 102, 241, 0.3);
+
+  /* Error States */
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
   --error-text: #991b1b;
-  --error-bg-dark: #7f1d1d;
+  --error-bg-dark: #450a0a;
+  --error-border-dark: #7f1d1d;
   --error-text-dark: #fecaca;
-  --success-bg: #dcfce7;
-  --success-border: #86efac;
+
+  /* Success States */
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
   --success-text: #166534;
-  --success-bg-dark: #14532d;
-  --success-text-dark: #dcfce7;
-  --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  --shadow-xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  --success-bg-dark: #052e16;
+  --success-border-dark: #166534;
+  --success-text-dark: #bbf7d0;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  --shadow-glow: 0 0 40px rgba(79, 70, 229, 0.15);
+  --shadow-glow-dark: 0 0 40px rgba(99, 102, 241, 0.1);
+
+  /* Border Radius */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 20px;
+  --radius-2xl: 24px;
+
+  /* Transitions */
   --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-fast: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Typography */
   --font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
@@ -232,7 +279,7 @@ body.dark .login-header p {
 
 .tracker-btn:hover {
   border-color: var(--primary);
-  background: #eef2ff;
+  background: rgba(79, 70, 229, 0.08);
   color: var(--primary);
   transform: translateY(-2px);
   box-shadow: var(--shadow-sm);
@@ -247,7 +294,7 @@ body.dark .login-header p {
 
 .tracker-btn.syphon:hover {
   border-color: var(--syphon-primary);
-  background: #f3e8ff;
+  background: rgba(139, 92, 246, 0.08);
   color: var(--syphon-primary);
 }
 
@@ -264,13 +311,15 @@ body.dark .tracker-btn {
 }
 
 body.dark .tracker-btn:hover {
-  border-color: var(--primary);
-  background: rgba(102, 126, 234, 0.15);
+  border-color: var(--primary-light);
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--primary-light);
 }
 
 body.dark .tracker-btn.syphon:hover {
-  border-color: var(--syphon-primary);
-  background: rgba(139, 92, 246, 0.15);
+  border-color: var(--syphon-light);
+  background: rgba(167, 139, 250, 0.15);
+  color: var(--syphon-light);
 }
 
 /* ===== Form ===== */
@@ -302,7 +351,7 @@ body.dark .tracker-btn.syphon:hover {
   outline: none;
   border-color: var(--primary);
   background: var(--card-bg);
-  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 4px var(--input-focus-ring);
 }
 
 body.dark .login-form input {
@@ -312,9 +361,9 @@ body.dark .login-form input {
 }
 
 body.dark .login-form input:focus {
-  border-color: var(--primary);
+  border-color: var(--primary-light);
   background: var(--card-bg-dark);
-  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2);
+  box-shadow: 0 0 0 4px var(--input-focus-ring-dark);
 }
 
 /* ===== Buttons ===== */
@@ -355,7 +404,7 @@ body.dark .login-form input:focus {
 
 .login-btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 12px 28px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 12px 28px rgba(79, 70, 229, 0.35);
 }
 
 .login-btn:active {
@@ -368,7 +417,7 @@ body.dark .login-form input:focus {
 }
 
 .syphon-mode .login-btn:hover {
-  box-shadow: 0 12px 28px rgba(139, 92, 246, 0.4);
+  box-shadow: 0 12px 28px rgba(139, 92, 246, 0.35);
 }
 
 .setup-btn {
